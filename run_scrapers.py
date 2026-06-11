@@ -7,8 +7,9 @@ from dotenv import load_dotenv
 
 from config import Config
 from database.operations import (
-    add_edition, update_edition_status, get_all_titles, 
-    get_subscribers_for_title, log_delivery, has_been_delivered
+    add_edition, update_edition_status, get_pending_scrapes,
+    get_subscribers_for_title, log_delivery, has_been_delivered,
+    upsert_scrape_status
 )
 from utils.helpers import get_today, format_date
 
@@ -61,11 +62,17 @@ async def main():
     
     print(f"Scraping all active titles for today: {today}")
     
-    # 1. Get all active titles from DB
-    active_titles = await get_all_titles("", active_only=True)
+    # 1. Get titles that haven't been successfully scraped today (max 6 attempts)
+    pending_titles = await get_pending_scrapes("", scrape_date=today, max_attempts=6)
+    
+    if not pending_titles:
+        print("All active titles have already been scraped for today! Exiting.")
+        return
+        
+    print(f"Found {len(pending_titles)} titles pending scrape.")
     
     # 2. Iterate and scrape using the dynamic source module
-    for title in active_titles:
+    for title in pending_titles:
         name = title["name"]
         slug = title["slug"]
         source_module_name = title.get("source")
@@ -89,7 +96,9 @@ async def main():
         output_file = await scraper_module.scrape(source_url, slug, name)
         
         if not output_file or not os.path.exists(output_file):
-            continue # Scraping failed, it already logged the reason
+            # Failed to scrape, record the attempt
+            await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
+            continue
             
         # 3. Upload to Telegram Storage Channel
         friendly_date = format_date(today)
@@ -126,6 +135,10 @@ async def main():
                 file_id=telegram_file_id,
                 message_id=message_id
             )
+            
+            # Mark the scrape as successfully found!
+            await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=True)
+            
             print(f"[{name}] Success! Database updated.")
             
             # 5. Deliver to Users
