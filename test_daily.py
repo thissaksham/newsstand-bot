@@ -2,7 +2,7 @@ import os
 import asyncio
 from dotenv import load_dotenv
 from telegram import Bot
-from config.parser import Config
+from config import Config
 from scrapers import dailyepaper_in
 
 async def main():
