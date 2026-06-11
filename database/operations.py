@@ -214,6 +214,7 @@ async def get_user_subscriptions(db_path: str, user_id: int) -> list[dict[str, A
     for row in resp.data:
         title = row.get("titles", {})
         subs.append({
+            "id": row["title_id"],
             "title_id": row["title_id"],
             "name": title.get("name"),
             "slug": title.get("slug"),
