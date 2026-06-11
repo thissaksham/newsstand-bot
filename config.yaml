@@ -17,371 +17,349 @@ schedule:
   stop_retrying: '12:00'
   max_retries: 6
 titles:
-- name: The Times of India
-  slug: times-of-india
-  source_url: https://www.careerswave.in/times-of-india-epaper-pdf-free-download/
+- name: Business Line
+  slug: business-line
+  source_url: https://www.careerswave.in/business-line-epaper-pdf-free-download/
   language: English
   category: Newspaper
   scrape_website: careerswave_in
-- name: Hindustan Times
-  slug: hindustan-times
-  source_url: https://www.careerswave.in/hindustan-epaper-pdf-free-download/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: The Indian Express
-  slug: the-indian-express
-  source_url: https://www.careerswave.in/the-indian-express-epaper-pdf/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
+
 - name: Economic Times
   slug: economic-times
   source_url: https://www.careerswave.in/economic-times-epaper-pdf-free-download/
   language: English
   category: Newspaper
   scrape_website: careerswave_in
+
+- name: Hindustan Times
+  slug: hindustan-times
+  source_url: https://www.careerswave.in/hindustan-times-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: The Times of India
+  slug: the-times-of-india
+  source_url: https://www.careerswave.in/times-of-india-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
 - name: The Telegraph
   slug: the-telegraph
   source_url: https://www.careerswave.in/telegraph-epaper-pdf-free-download/
   language: English
   category: Newspaper
   scrape_website: careerswave_in
-- name: Deccan Herald
-  slug: deccan-herald
-  source_url: https://www.careerswave.in/deccan-herald-epaper-p2024-free-pdf/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Deccan Chronicle
-  slug: deccan-chronicle
-  source_url: https://www.careerswave.in/deccan-chronicle-epaper-pdf-free-download/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: The Pioneer
-  slug: the-pioneer
-  source_url: https://www.careerswave.in/the-pioneer-epaper-pdf-free-download/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: The Statesman
-  slug: the-statesman
-  source_url: https://www.careerswave.in/the-statesman-epaper-pdf-free-download/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: DNA
-  slug: dna
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Mint
-  slug: mint
-  source_url: https://www.careerswave.in/mint-epaper-pdf-free-download/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
+
 - name: Business Standard
   slug: business-standard
   source_url: https://www.careerswave.in/business-standard-newspaper-in-pdf/
   language: English
   category: Newspaper
   scrape_website: careerswave_in
-- name: Financial Express
-  slug: financial-express
-  source_url: https://www.careerswave.in/the-financial-express-epaper-pdf-free-download/
+
+- name: First India
+  slug: first-india
+  source_url: https://www.careerswave.in/first-india-epaper-pdf-free-download/
   language: English
   category: Newspaper
   scrape_website: careerswave_in
-- name: The Tribune
-  slug: the-tribune
-  source_url: https://www.careerswave.in/the-tribune-epaper-pdf-free-download/
+
+- name: Telangana Today
+  slug: telangana-today
+  source_url: https://www.careerswave.in/telangana-today-epaper-pdf-free-download/
   language: English
   category: Newspaper
   scrape_website: careerswave_in
-- name: The Hans India
-  slug: the-hans-india
-  source_url: https://www.careerswave.in/hans-india-epaper-pdf-free-download/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Mid-Day
-  slug: mid-day
-  source_url: https://www.careerswave.in/mid-day-epaper-pdf-free-download/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
+
 - name: Mumbai Mirror
   slug: mumbai-mirror
   source_url: https://www.careerswave.in/mumbai-mirror-epaper-download/
   language: English
   category: Newspaper
   scrape_website: careerswave_in
-- name: Dainik Bhaskar
-  slug: dainik-bhaskar
-  source_url: https://www.careerswave.in/dainik-bhaskar-epaper-pdf-free-download/
+
+- name: The Financial Express
+  slug: the-financial-express
+  source_url: https://www.careerswave.in/the-financial-express-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Deccan Chronicle
+  slug: deccan-chronicle
+  source_url: https://www.careerswave.in/deccan-chronicle-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Live Mint
+  slug: live-mint
+  source_url: https://www.careerswave.in/mint-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: The Statesman
+  slug: the-statesman
+  source_url: https://www.careerswave.in/the-statesman-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: The Tribune
+  slug: the-tribune
+  source_url: https://www.careerswave.in/the-tribune-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: The Asian Age
+  slug: the-asian-age
+  source_url: https://www.careerswave.in/the-asian-age-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Hans India
+  slug: hans-india
+  source_url: https://www.careerswave.in/hans-india-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: The Greater Kashmir
+  slug: the-greater-kashmir
+  source_url: https://www.careerswave.in/greater-kashmir-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: The Pioneer
+  slug: the-pioneer
+  source_url: https://www.careerswave.in/the-pioneer-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Free Press Journal
+  slug: free-press-journal
+  source_url: https://www.careerswave.in/free-press-journal-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Oheraldo
+  slug: oheraldo
+  source_url: https://www.careerswave.in/o-heraldo-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Nagaland Post
+  slug: nagaland-post
+  source_url: https://www.careerswave.in/nagaland-post-epaper-pdf-down/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: State Times
+  slug: state-times
+  source_url: https://www.careerswave.in/state-times-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Assam Tribune
+  slug: assam-tribune
+  source_url: https://www.careerswave.in/assam-tribune-epaper-download-daily-after-0630-am/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Arunachal Times
+  slug: arunachal-times
+  source_url: https://www.careerswave.in/arunachal-times-epaper-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Kashmir Times
+  slug: kashmir-times
+  source_url: https://www.careerswave.in/kashmir-times-epaper-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Millennium Post
+  slug: millennium-post
+  source_url: https://www.careerswave.in/millennium-post-epaper-p2024-free-pdf/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Deccan Herald
+  slug: deccan-herald
+  source_url: https://www.careerswave.in/deccan-herald-epaper-p2024-free-pdf/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Lokmat Times
+  slug: lokmat-times
+  source_url: https://www.careerswave.in/lokmat-times-epaper-p2024-free-pdf/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in
+
+- name: Amar ujala
+  slug: amar-ujala
+  source_url: https://www.careerswave.in/amar-ujala-epaper-pdf-free-download/
   language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
+
 - name: Dainik Jagran
   slug: dainik-jagran
   source_url: https://www.careerswave.in/dainik-jagran-epaper-pdf-free-download/
   language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Hindustan Dainik
-  slug: hindustan-dainik
+
+- name: Hindustan
+  slug: hindustan
   source_url: https://www.careerswave.in/hindustan-epaper-pdf-free-download/
   language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Amar Ujala
-  slug: amar-ujala
-  source_url: https://www.careerswave.in/amar-ujala-epaper-pdf-free-download/
+
+- name: The Pioneer
+  slug: the-pioneer
+  source_url: https://www.careerswave.in/the-pioneer-epaper-pdf-free-download/
   language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Navbharat Times
-  slug: navbharat-times
-  source_url: https://www.careerswave.in/navbharat-times-epaper-pdf-free-download/
-  language: Hindi
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Rajasthan Patrika
-  slug: rajasthan-patrika
-  source_url: https://www.careerswave.in/rajasthan-patrika-epaper-pdf-free-download/
-  language: Hindi
-  category: Newspaper
-  scrape_website: careerswave_in
+
 - name: Prabhat Khabar
   slug: prabhat-khabar
   source_url: https://www.careerswave.in/prabhat-khabar-epaper-pdf-free-download/
   language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Nai Dunia
-  slug: nai-dunia
-  source_url: https://www.careerswave.in/nai-dunia-epaper-download/
-  language: Hindi
-  category: Newspaper
-  scrape_website: careerswave_in
+
 - name: Jansatta
   slug: jansatta
   source_url: https://www.careerswave.in/jansatta-epaper-pdf-free-download/
   language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Dinamalar
-  slug: dinamalar
-  language: Tamil
+
+- name: Navbharat Times
+  slug: navbharat-times
+  source_url: https://www.careerswave.in/navbharat-times-epaper-pdf-free-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Dinakaran
-  slug: dinakaran
-  source_url: https://www.careerswave.in/dinakaran-epaper-pdf/
-  language: Tamil
+
+- name: Rajasthan Patrika
+  slug: rajasthan-patrika
+  source_url: https://www.careerswave.in/rajasthan-patrika-epaper-pdf-free-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Daily Thanthi
-  slug: daily-thanthi
-  source_url: https://www.careerswave.in/daily-thanthi-epaper-pdf/
-  language: Tamil
+
+- name: Dainik Navajyoti
+  slug: dainik-navajyoti
+  source_url: https://www.careerswave.in/dainik-navajyoti-epaper-pdf-free-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Dinamani
-  slug: dinamani
-  source_url: https://www.careerswave.in/dinamani-epaper-pdf/
-  language: Tamil
+
+- name: Punjab Kesari
+  slug: punjab-kesari
+  source_url: https://www.careerswave.in/punjab-kesari-epaper-pdf-free-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Eenadu
-  slug: eenadu
-  source_url: https://www.careerswave.in/eenadu-epaper-pdf-free-download/
-  language: Telugu
+
+- name: Dainik Bhaskar
+  slug: dainik-bhaskar
+  source_url: https://www.careerswave.in/dainik-bhaskar-epaper-pdf-free-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Sakshi
-  slug: sakshi
-  source_url: https://www.careerswave.in/sakshi-epaper-pdf-free-download/
-  language: Telugu
+
+- name: Business Standard
+  slug: business-standard
+  source_url: https://www.careerswave.in/business-standard-newspaper-in-pdf/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Andhra Jyothy
-  slug: andhra-jyothy
-  language: Telugu
+
+- name: Hari Bhoomi
+  slug: hari-bhoomi
+  source_url: https://www.careerswave.in/hari-bhoomi-epaper-pdf-free-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Vaartha
-  slug: vaartha
-  source_url: https://www.careerswave.in/vaartha-epaper-pdf-free-download/
-  language: Telugu
+
+- name: Samachar Jagat
+  slug: samachar-jagat
+  source_url: https://www.careerswave.in/samachar-jagat-epaper-p2024-free-pdf/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Vijaya Karnataka
-  slug: vijaya-karnataka
-  source_url: https://www.careerswave.in/vijaya-karnataka-epaper-pdf/
-  language: Kannada
+
+- name: Rashtriya Sahara
+  slug: rashtriya-sahara
+  source_url: https://www.careerswave.in/rashtriya-sahara-epaper-pdf-free-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Prajavani
-  slug: prajavani
-  source_url: https://www.careerswave.in/prajavani-epaper-pdf/
-  language: Kannada
+
+- name: Nai Dunia
+  slug: nai-dunia
+  source_url: https://www.careerswave.in/nai-dunia-epaper-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Kannada Prabha
-  slug: kannada-prabha
-  source_url: https://www.careerswave.in/kannada-prabha-epaper-download/
-  language: Kannada
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Udayavani
-  slug: udayavani
-  source_url: https://www.careerswave.in/udayavani-epaper-pdf/
-  language: Kannada
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Malayala Manorama
-  slug: malayala-manorama
-  source_url: https://www.careerswave.in/malayala-manorama-epaper-download/
-  language: Malayalam
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Mathrubhumi
-  slug: mathrubhumi
-  source_url: https://www.careerswave.in/mathrubhumi-epaper-download/
-  language: Malayalam
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Kerala Kaumudi
-  slug: kerala-kaumudi
-  language: Malayalam
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Madhyamam
-  slug: madhyamam
-  source_url: https://www.careerswave.in/madhyamam-epaper-pdf/
-  language: Malayalam
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Loksatta
-  slug: loksatta
-  source_url: https://www.careerswave.in/loksatta-epaper-pdf-free-download/
-  language: Marathi
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Maharashtra Times
-  slug: maharashtra-times
-  source_url: https://www.careerswave.in/maharashtra-times-epaper-pdf-free-download/
-  language: Marathi
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Sakal
-  slug: sakal
-  source_url: https://www.careerswave.in/sakal-epaper-pdf-free-download/
-  language: Marathi
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Lokmat
-  slug: lokmat
+
+- name: Lokmat Samachar
+  slug: lokmat-samachar
   source_url: https://www.careerswave.in/lokmat-samachar-epaper-download/
-  language: Marathi
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Pudhari
-  slug: pudhari
-  source_url: https://www.careerswave.in/pudhari-epaper-pdf-free-download/
-  language: Marathi
+
+- name: Lok Tej
+  slug: lok-tej
+  source_url: https://www.careerswave.in/lok-tej-epaper-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Gujarat Samachar
-  slug: gujarat-samachar
-  source_url: https://www.careerswave.in/gujarat-samachar-epaper-pdf-free-download/
-  language: Gujarati
+
+- name: Divya Himachal
+  slug: divya-himachal
+  source_url: https://www.careerswave.in/divya-himachal-epaper-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Divya Bhaskar
-  slug: divya-bhaskar
-  source_url: https://www.careerswave.in/divya-bhaskar-epaper-pdf-free-download/
-  language: Gujarati
+
+- name: Deshbandhu
+  slug: deshbandhu
+  source_url: https://www.careerswave.in/deshbandhu-newspaper-p2024-free-pdf/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Sandesh
-  slug: sandesh
-  source_url: https://www.careerswave.in/sandesh-epaper-pdf-free-download/
-  language: Gujarati
+
+- name: Uttam Hindu
+  slug: uttam-hindu
+  source_url: https://www.careerswave.in/uttam-hindu-epaper-download/
+  language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
-- name: Ajit
-  slug: ajit
-  language: Punjabi
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Punjabi Tribune
-  slug: punjabi-tribune
-  source_url: https://www.careerswave.in/punjabi-tribune-epaper-p2024-free-pdf/
-  language: Punjabi
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Jagbani
-  slug: jagbani
-  language: Punjabi
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Sambad
-  slug: sambad
-  source_url: https://www.careerswave.in/sambad-epaper-p2024-free-pdf/
-  language: Odia
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Dharitri
-  slug: dharitri
-  source_url: https://www.careerswave.in/dharitri-epaper-p2024-free-pdf/
-  language: Odia
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Pragativadi
-  slug: pragativadi
-  source_url: https://www.careerswave.in/pragativadi-epaper-pdf/
-  language: Odia
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Anandabazar Patrika
-  slug: anandabazar-patrika
-  source_url: https://www.careerswave.in/anandabazar-patrika-epaper-pdf-free-download/
-  language: Bengali
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Bartaman
-  slug: bartaman
-  language: Bengali
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Ei Samay
-  slug: ei-samay
-  source_url: https://www.careerswave.in/ei-samay-epaper-pdf-free-download/
-  language: Bengali
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Sangbad Pratidin
-  slug: sangbad-pratidin
-  source_url: https://www.careerswave.in/sangbad-pratidin-epaper-pdf-free-download/
-  language: Bengali
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Dainik Janambhumi
-  slug: dainik-janambhumi
-  source_url: https://www.careerswave.in/dainik-janambhumi-epaper-p2024-free-pdf/
-  language: Assamese
-  category: Newspaper
-  scrape_website: careerswave_in
-- name: Asomiya Pratidin
-  slug: asomiya-pratidin
-  source_url: https://www.careerswave.in/asomiya-pratidin-epaper-p2024-free-pdf/
-  language: Assamese
-  category: Newspaper
-  scrape_website: careerswave_in
+
 packs:
 - name: English Dailies
   description: Top English-language newspapers from across India
