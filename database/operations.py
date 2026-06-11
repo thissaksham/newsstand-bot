@@ -365,15 +365,25 @@ async def get_titles_with_editions(db_path: str) -> list[int]:
 
 async def sync_titles_from_config(db_path: str, titles: list) -> None:
     db = await _get_client()
+    config_slugs = []
     for t in titles:
+        slug = getattr(t, 'slug', '')
+        config_slugs.append(slug)
         data = {
             'name': getattr(t, 'name', ''),
-            'slug': getattr(t, 'slug', ''),
+            'slug': slug,
             'language': getattr(t, 'language', 'English'),
             'category': getattr(t, 'category', 'Newspaper'),
-            'source': getattr(t, 'scrape_website', 'careerswave_in')
+            'source': getattr(t, 'scrape_website', 'careerswave_in'),
+            'is_active': 1
         }
         await db.table('titles').upsert(data, on_conflict='slug').execute()
+
+    # Deactivate titles not in config
+    db_titles = await db.table('titles').select('id, slug, is_active').execute()
+    for row in db_titles.data:
+        if row['slug'] not in config_slugs and row['is_active'] == 1:
+            await db.table('titles').update({'is_active': 0}).eq('id', row['id']).execute()
 
 async def sync_packs_from_config(db_path: str, packs: list) -> None:
     pass
