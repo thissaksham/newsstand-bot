@@ -66,7 +66,7 @@ async def post_init(application: Application) -> None:
     # 6. Store config in bot_data for handlers to access
     application.bot_data["config"] = config
     
-    logger.info("✅ Bot initialized successfully!")
+    logger.info("Bot initialized successfully!")
 
 
 async def post_shutdown(application: Application) -> None:
