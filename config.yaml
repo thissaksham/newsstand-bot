@@ -17,6 +17,13 @@ schedule:
   stop_retrying: '12:00'
   max_retries: 6
 titles:
+- name: Mirror
+  slug: mirror
+  source_url: https://dailyepaper.in/ahmedabad-mirror-epaper-download-2026/
+  language: English
+  category: Newspaper
+  scrape_website: dailyepaper_in
+  
 - name: Business Line
   slug: business-line
   source_url: https://www.careerswave.in/business-line-epaper-pdf-free-download/
@@ -219,6 +226,27 @@ titles:
   language: Hindi
   category: Newspaper
   scrape_website: careerswave_in
+
+- name: आईनेक्स्ट लाइव
+  slug: iNext Live
+  source_url: https://dailyepaper.in/inext-live-epaper-epaper-download-2026/
+  language: Hindi
+  category: Newspaper
+  scrape_website: dailyepaper_in
+
+- name: Lokmat
+  slug: lokmat
+  source_url: https://dailyepaper.in/lokmat-epaper-download-2026/
+  language: Hindi
+  category: Newspaper
+  scrape_website: dailyepaper_in
+
+- name: Nav Bharat
+  slug: nav-bharat
+  source_url: https://dailyepaper.in/navabharat-epaper-download-2026/
+  language: Hindi
+  category: Newspaper
+  scrape_website: dailyepaper_in
 
 - name: Dainik Jagran
   slug: dainik-jagran
