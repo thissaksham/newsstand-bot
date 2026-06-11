@@ -9,9 +9,10 @@ from config import Config
 from database.operations import (
     add_edition, update_edition_status, get_pending_scrapes,
     get_subscribers_for_title, log_delivery, has_been_delivered,
-    upsert_scrape_status
+    upsert_scrape_status, get_failed_scrapes
 )
 from utils.helpers import get_today, format_date
+from datetime import datetime
 
 async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, friendly_date: str):
     """Deliver the edition to all subscribed users."""
@@ -150,6 +151,19 @@ async def main():
         finally:
             if os.path.exists(output_file):
                 os.remove(output_file)
+
+    # 6. Send Failure Report on the last run of the day (06:xx UTC -> 11:30 IST)
+    if datetime.utcnow().hour == 6:
+        failed_titles = await get_failed_scrapes("", today)
+        if failed_titles:
+            report = "⚠️ *Daily Scrape Failure Report*\n\nThe following newspapers could not be found today after 6 attempts:\n"
+            for t in failed_titles:
+                report += f"• {t}\n"
+            try:
+                await bot.send_message(chat_id=channel_id, text=report, parse_mode="Markdown")
+                print("Failure report sent to channel.")
+            except Exception as e:
+                print(f"Failed to send report: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
