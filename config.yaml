@@ -29,12 +29,6 @@ titles:
   language: English
   category: Newspaper
   scrape_website: careerswave_in
-- name: The Hindu
-  slug: the-hindu
-  source_url: https://www.careerswave.in/the-hindu-epaper-pdf-download-for-upsc/
-  language: English
-  category: Newspaper
-  scrape_website: careerswave_in
 - name: The Indian Express
   slug: the-indian-express
   source_url: https://www.careerswave.in/the-indian-express-epaper-pdf/
