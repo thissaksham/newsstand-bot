@@ -19,12 +19,6 @@ from .packs import packs_handler
 from .get import get_conversation_handler, today_handler
 from .tracker import tracker_handler
 from .lastupdated import lastupdated_handler
-from .admin import (
-    upload_conversation_handler,
-    sync_handler,
-    stats_handler,
-    broadcast_handler,
-)
 from .callbacks import callback_router
 
 
@@ -33,7 +27,6 @@ def register_handlers(app: Application) -> None:
 
     # ── Conversation handlers (must be registered before generic callbacks) ──
     app.add_handler(get_conversation_handler)
-    app.add_handler(upload_conversation_handler)
 
     # ── Command handlers ─────────────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start_handler))
@@ -46,9 +39,6 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("today", today_handler))
     app.add_handler(CommandHandler("tracker", tracker_handler))
     app.add_handler(CommandHandler("lastupdated", lastupdated_handler))
-    app.add_handler(CommandHandler("sync", sync_handler))
-    app.add_handler(CommandHandler("stats", stats_handler))
-    app.add_handler(CommandHandler("broadcast", broadcast_handler))
 
     # ── Callback query router (catch-all for inline keyboard presses) ────────
     app.add_handler(CallbackQueryHandler(callback_router))

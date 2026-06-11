@@ -261,7 +261,7 @@ async def subscribe_to_pack(db_path: str, user_id: int, pack_id: int) -> int:
     return new_subs
 
 
-async def get_all_packs(db_path: str) -> list[dict[str, Any]]:
+async def get_packs(db_path: str) -> list[dict[str, Any]]:
     db = await _get_client()
     resp = await db.table("packs").select("*").order("name").execute()
     return resp.data
@@ -380,4 +380,36 @@ async def get_failed_scrapes(db_path: str, scrape_date: date) -> list[str]:
     db = await _get_client()
     resp = await db.table('daily_scrape_status').select('titles(name)').eq('date', scrape_date.isoformat()).eq('status', 'failed').execute()
     return sorted([row['titles']['name'] for row in resp.data if row.get('titles')])
+
+
+
+async def get_titles_by_language(db_path: str, language: str) -> list[dict]:
+    db = await _get_client()
+    resp = await db.table('titles').select('*').eq('language', language.lower()).eq('is_active', 1).order('name').execute()
+    # Some titles in the database may have capitalized languages, some lowercase, so we need to match case-insensitively, 
+    # but postgrest doesn't have an easy case-insensitive eq (ilike exists but only for pattern matching). 
+    # Actually, postgrest has .ilike() for case-insensitive exact matching if we don't use wildcards.
+    resp = await db.table('titles').select('*').ilike('language', language).eq('is_active', 1).order('name').execute()
+    return resp.data
+
+
+
+async def is_subscribed(db_path: str, user_id: int, title_id: int) -> bool:
+    db = await _get_client()
+    resp = await db.table('subscriptions').select('user_id').eq('user_id', user_id).eq('title_id', title_id).execute()
+    return len(resp.data) > 0
+
+
+
+async def get_pack_titles(db_path: str, pack_id: int) -> list[dict]:
+    db = await _get_client()
+    resp = await db.table('pack_titles').select('titles(*)').eq('pack_id', pack_id).execute()
+    return [row['titles'] for row in resp.data if row.get('titles')]
+
+
+
+async def get_latest_edition(db_path: str, title_id: int) -> dict | None:
+    db = await _get_client()
+    resp = await db.table('editions').select('*').eq('title_id', title_id).not_.is_('file_id', 'null').order('date', desc=True).limit(1).execute()
+    return resp.data[0] if resp.data else None
 
