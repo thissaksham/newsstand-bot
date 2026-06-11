@@ -328,10 +328,14 @@ async def upsert_scrape_status(
 
 async def get_pending_scrapes(db_path: str, scrape_date: date, max_attempts: int = 3) -> list[dict[str, Any]]:
     db = await _get_client()
-    # We want titles that are active, and either have no scrape_status for today, or have status='pending' and attempts < max
     
+    # 1. Find all title IDs that have at least one active subscriber
+    subs_resp = await db.table("subscriptions").select("title_id").execute()
+    subscribed_title_ids = {row["title_id"] for row in subs_resp.data}
+    
+    # 2. Get active titles and filter them by the subscribed IDs
     titles_resp = await db.table("titles").select("*").eq("is_active", 1).execute()
-    active_titles = titles_resp.data
+    active_titles = [t for t in titles_resp.data if t["id"] in subscribed_title_ids]
     
     status_resp = await db.table("daily_scrape_status").select("*").eq("date", scrape_date.isoformat()).execute()
     status_map = {row["title_id"]: row for row in status_resp.data}
