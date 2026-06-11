@@ -3,9 +3,8 @@ Newsstand Bot — /get and /today handlers
 Retrieve specific editions interactively or all of today's subscribed papers.
 """
 
-import asyncio
 import logging
-from datetime import datetime, date
+from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -18,10 +17,8 @@ from telegram.ext import (
 from database.operations import (
     get_all_titles,
     get_edition,
-    get_user_subscriptions,
 )
-from utils.helpers import format_date, get_today
-import database.operations as db_ops
+from utils.helpers import format_date
 
 logger = logging.getLogger(__name__)
 

@@ -20,10 +20,8 @@ from telegram.ext import (
 from config import Config
 from database.operations import (
     get_all_titles,
-    get_edition,
     get_subscribers,
     get_weekly_stats,
-    get_user_subscriptions,
     get_scrape_status,
 )
 from delivery.engine import DeliveryEngine
@@ -174,7 +172,6 @@ async def upload_receive_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
     # Save edition to DB
-    from database.operations import log_delivery as _save  # reuse or add dedicated fn
     try:
         # Attempt to use a dedicated save_edition if available, else use engine
         engine = DeliveryEngine()
@@ -344,7 +341,6 @@ async def broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         stats = await get_weekly_stats()
         # We need a list of all user IDs — use get_subscribers with a dummy
         # or add a dedicated get_all_users. Fall back to stats count.
-        from database.operations import get_user  # we'll iterate known users
     except Exception:
         pass
 

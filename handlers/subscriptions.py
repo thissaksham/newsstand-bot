@@ -7,7 +7,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from database.operations import get_user_subscriptions, unsubscribe, get_all_titles
+from database.operations import get_user_subscriptions, unsubscribe
 
 logger = logging.getLogger(__name__)
 

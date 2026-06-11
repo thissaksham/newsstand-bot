@@ -12,8 +12,6 @@ import logging
 from datetime import date
 from typing import Optional
 
-import httpx
-from bs4 import BeautifulSoup
 
 from scrapers.base import BaseScraper, EditionResult, TitleInfo
 

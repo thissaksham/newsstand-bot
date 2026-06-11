@@ -7,14 +7,13 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import Config
 from database.operations import (
     get_titles_by_language,
     get_all_titles,
     subscribe,
     unsubscribe,
     is_subscribed,
-    search_titles,
+    get_user_subscriptions,
 )
 from utils.helpers import fuzzy_match_title
 
