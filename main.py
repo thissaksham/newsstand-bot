@@ -40,9 +40,11 @@ logger = logging.getLogger("newsstand")
 
 BOT_COMMANDS = [
     BotCommand("help", "Learn how to use me"),
-    BotCommand("subscribe", "Subscribe to any title from the categories"),
-    BotCommand("subscriptions", "View your subscriptions"),
-    BotCommand("get", "Get an edition from the archives"),
+    BotCommand("subscribe", "Subscribe to your favorite newspapers"),
+    BotCommand("unsubscribe", "Unsubscribe from newspapers"),
+    BotCommand("subscriptions", "View your active subscriptions"),
+    BotCommand("get", "Get any newspaper from the archives"),
+    BotCommand("today", "Get today's newspapers instantly"),
 ]
 
 

@@ -2,6 +2,7 @@ import os
 import re
 import httpx
 import gdown
+from utils.helpers import get_today
 
 async def scrape(source_url: str, slug: str, name: str) -> str | None:
     """
@@ -32,7 +33,8 @@ async def scrape(source_url: str, slug: str, name: str) -> str | None:
                 return None
                 
             file_id = match.group(1)
-            output_file = f"{slug}.pdf"
+            today_str = get_today()
+            output_file = f"{slug}_{today_str}.pdf"
             
             print(f"[{name}] Downloading via gdown...")
             # Run gdown blocking call in thread to avoid blocking asyncio loop

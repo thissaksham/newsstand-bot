@@ -47,11 +47,11 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "  /subscribe — Interactive title browser\n"
         "  /packs — Curated subscription packs\n\n"
         "  <b>Subscriptions</b>\n"
-        "  /sub &lt;title&gt; — Quick subscribe\n"
-        "  /unsub &lt;title&gt; — Quick unsubscribe\n"
+        "  /sub <title> — Quick subscribe\n"
+        "  /unsub <title> or /unsubscribe — Quick unsubscribe\n"
         "  /subscriptions — View active subs\n\n"
         "  <b>Reading</b>\n"
-        "  /get &lt;title&gt; [date] — Fetch an edition\n"
+        "  /get <title> [date] — Fetch an edition\n"
         "  /today — All of today's papers\n"
         "  /tracker — Weekly delivery report\n"
         "  /lastupdated — Freshness check\n\n"
@@ -76,24 +76,15 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         "📋 <b>Subscriptions</b>\n"
         "  /sub &lt;title&gt; — Quick-subscribe by name\n"
-        "  /unsub &lt;title&gt; — Quick-unsubscribe by name\n"
+        "  /unsub &lt;title&gt; or /unsubscribe — Quick-unsubscribe by name\n"
         "  /subscriptions — View &amp; manage your active subs\n\n"
-
         "📰 <b>Reading &amp; Retrieval</b>\n"
         "  /get &lt;title&gt; — Today's edition of a title\n"
         "  /get &lt;title&gt; &lt;DD-MM-YYYY&gt; — Archived edition\n"
         "  /today — Deliver all your subscribed papers\n\n"
-
         "📊 <b>Tracking</b>\n"
         "  /tracker — Visual weekly delivery report\n"
         "  /lastupdated — Last available date per title\n\n"
-
-        "🛠️ <b>Admin</b> <i>(restricted)</i>\n"
-        "  /upload — Upload a PDF edition manually\n"
-        "  /sync — Trigger an immediate scrape cycle\n"
-        "  /stats — Bot-wide statistics\n"
-        "  /broadcast &lt;msg&gt; — Send message to all users\n\n"
-
         "💡 <i>Tip: You can use partial names with /sub and /get — "
         "the bot will fuzzy-match them for you!</i>"
     )
