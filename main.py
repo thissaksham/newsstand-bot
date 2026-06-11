@@ -44,7 +44,6 @@ BOT_COMMANDS = [
     BotCommand("unsubscribe", "Unsubscribe from newspapers"),
     BotCommand("subscriptions", "View your active subscriptions"),
     BotCommand("get", "Get any newspaper from the archives"),
-    BotCommand("today", "Get today's newspapers instantly"),
 ]
 
 
