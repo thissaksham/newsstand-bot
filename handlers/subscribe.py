@@ -14,6 +14,7 @@ from database.operations import (
     unsubscribe,
     is_subscribed,
     get_user_subscriptions,
+    register_user,
 )
 from utils.helpers import fuzzy_match_title
 
@@ -168,6 +169,15 @@ async def handle_toggle_callback(update: Update, context: ContextTypes.DEFAULT_T
     language = parts[2]
     page = int(parts[3])
 
+    # Ensure user is registered before attempting to subscribe
+    user = update.effective_user
+    await register_user(
+        db_path=db_path,
+        user_id=user.id,
+        username=user.username or "",
+        first_name=user.first_name or "",
+    )
+
     if await is_subscribed(db_path, user_id, title_id):
         await unsubscribe(db_path, user_id, title_id)
     else:
@@ -204,8 +214,17 @@ async def sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     query_text = " ".join(context.args)
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
     db_path = context.bot_data["config"].db_path
+    
+    await register_user(
+        db_path=db_path,
+        user_id=user_id,
+        username=user.username or "",
+        first_name=user.first_name or "",
+    )
+    
     all_titles = await get_all_titles(db_path)
 
     match = fuzzy_match_title(query_text, all_titles)
@@ -268,8 +287,17 @@ async def unsub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     query_text = " ".join(context.args)
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
     db_path = context.bot_data["config"].db_path
+    
+    await register_user(
+        db_path=db_path,
+        user_id=user_id,
+        username=user.username or "",
+        first_name=user.first_name or "",
+    )
+    
     all_titles = await get_all_titles(db_path)
 
     match = fuzzy_match_title(query_text, all_titles)
