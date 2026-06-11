@@ -9,7 +9,6 @@ from telegram.ext import ContextTypes
 
 from .subscribe import handle_lang_callback, handle_toggle_callback, handle_page_callback, handle_done_callback
 from .subscriptions import handle_unsub_callback
-from .packs import handle_pack_sub_callback
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,6 @@ _ROUTES: list[tuple[str, object]] = [
     ("toggle:",   handle_toggle_callback),
     ("page:",     handle_page_callback),
     ("unsub:",    handle_unsub_callback),
-    ("pack_sub:", handle_pack_sub_callback),
     ("done",      handle_done_callback),
 ]
 

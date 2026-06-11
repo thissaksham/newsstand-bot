@@ -15,10 +15,7 @@ from telegram.ext import (
 from .start import start_handler, help_handler
 from .subscribe import subscribe_handler, sub_handler, unsub_handler
 from .subscriptions import subscriptions_handler
-from .packs import packs_handler
-from .get import get_conversation_handler, today_handler
-from .tracker import tracker_handler
-from .lastupdated import lastupdated_handler
+from .get import get_conversation_handler
 from .callbacks import callback_router
 
 
@@ -35,10 +32,6 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("sub", sub_handler))
     app.add_handler(CommandHandler("unsub", unsub_handler))
     app.add_handler(CommandHandler("subscriptions", subscriptions_handler))
-    app.add_handler(CommandHandler("packs", packs_handler))
-    app.add_handler(CommandHandler("today", today_handler))
-    app.add_handler(CommandHandler("tracker", tracker_handler))
-    app.add_handler(CommandHandler("lastupdated", lastupdated_handler))
 
     # ── Callback query router (catch-all for inline keyboard presses) ────────
     app.add_handler(CallbackQueryHandler(callback_router))
