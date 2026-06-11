@@ -32,7 +32,9 @@ async def main():
                     chat_id=channel_id,
                     document=f,
                     caption=f"🧪 <b>TEST UPLOAD</b>\n📰 <b>{title.name}</b>\n📅 {date_obj}",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    read_timeout=300,
+                    write_timeout=300
                 )
             print(f"[{title.name}] Uploaded to Telegram Channel!")
             
