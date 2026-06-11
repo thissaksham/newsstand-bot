@@ -12,13 +12,14 @@ from database.operations import (
     upsert_scrape_status, get_failed_scrapes
 )
 from utils.helpers import get_today, format_date
-from datetime import datetime
+from datetime import datetime, date
 
-async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, friendly_date: str):
+async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, newspaper_date: date):
     """Deliver the edition to all subscribed users."""
     subscribers = await get_subscribers_for_title("", title_id)
     print(f"[{title_name}] Found {len(subscribers)} subscribers for delivery.")
     
+    friendly_date = format_date(newspaper_date)
     for user_id in subscribers:
         if await has_been_delivered("", user_id, edition_id):
             continue
@@ -94,15 +95,21 @@ async def main():
             continue
             
         # Run the generic scrape() function
-        output_file = await scraper_module.scrape(source_url, slug, name)
+        result = await scraper_module.scrape(source_url, slug, name)
         
-        if not output_file or not os.path.exists(output_file):
+        if not result:
             # Failed to scrape, record the attempt
             await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
             continue
             
+        output_file, newspaper_date = result
+        
+        if not output_file or not os.path.exists(output_file):
+            await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
+            continue
+
         # 3. Upload to Telegram Storage Channel
-        friendly_date = format_date(today)
+        friendly_date = format_date(newspaper_date)
         print(f"[{name}] Uploading to Telegram Channel...")
         try:
             with open(output_file, 'rb') as f:
@@ -124,7 +131,7 @@ async def main():
             edition_id = await add_edition(
                 db_path="",
                 title_id=title["id"],
-                edition_date=today,
+                edition_date=newspaper_date,
                 download_url=source_url,
                 status="stored"
             )

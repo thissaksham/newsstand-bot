@@ -2,9 +2,11 @@ import os
 import re
 import httpx
 import gdown
+from bs4 import BeautifulSoup
+from datetime import datetime, date
 from utils.helpers import get_today
 
-async def scrape(source_url: str, slug: str, name: str) -> str | None:
+async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | None:
     """
     Scrapes the careerswave.in website for a given newspaper.
     Returns the absolute path to the downloaded PDF, or None if failed.
@@ -33,8 +35,20 @@ async def scrape(source_url: str, slug: str, name: str) -> str | None:
                 return None
                 
             file_id = match.group(1)
-            today_str = get_today()
-            output_file = f"{slug}_{today_str}.pdf"
+            
+            # Extract date from HTML
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            time_tag = soup.find('time', class_='entry-date updated-date') or soup.find('time', class_='entry-date published')
+            
+            newspaper_date = get_today()
+            if time_tag and time_tag.get('datetime'):
+                dt_str = time_tag['datetime'].split('T')[0]
+                try:
+                    newspaper_date = datetime.strptime(dt_str, "%Y-%m-%d").date()
+                except ValueError:
+                    pass
+            
+            output_file = f"{slug}_{newspaper_date}.pdf"
             
             print(f"[{name}] Downloading via gdown...")
             # Run gdown blocking call in thread to avoid blocking asyncio loop
@@ -46,7 +60,7 @@ async def scrape(source_url: str, slug: str, name: str) -> str | None:
                 print(f"[{name}] Failed: gdown output not found")
                 return None
                 
-            return os.path.abspath(output_file)
+            return os.path.abspath(output_file), newspaper_date
             
         except Exception as e:
             print(f"[{name}] Error: {e}")
