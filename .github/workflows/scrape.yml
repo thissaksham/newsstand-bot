@@ -1,0 +1,35 @@
+name: Daily Newspaper Scraper
+
+on:
+  schedule:
+    # Runs at 00:00 UTC every day, which is 05:30 AM IST
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
+
+jobs:
+  scrape-and-deliver:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Scraper and Delivery Engine
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        STORAGE_CHANNEL_ID: ${{ secrets.STORAGE_CHANNEL_ID }}
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: |
+        python run_scrapers.py
