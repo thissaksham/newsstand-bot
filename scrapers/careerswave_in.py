@@ -7,6 +7,56 @@ from bs4 import BeautifulSoup
 from datetime import date
 from utils.helpers import get_today
 
+async def download_from_gdrive(file_id: str, output_file: str, name: str) -> bool:
+    """Downloads a file from Google Drive using direct HTTP GET with confirmation bypass,
+    falling back to gdown if it fails.
+    """
+    url = "https://docs.google.com/uc?export=download"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+    }
+    
+    print(f"[{name}] Attempting direct HTTP download from Google Drive...")
+    try:
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=120.0) as client:
+            resp = await client.get(url, params={"id": file_id})
+            
+            # Check for download warning cookie
+            token = None
+            for cookie_name, cookie_val in resp.cookies.items():
+                if cookie_name.startswith("download_warning"):
+                    token = cookie_val
+                    break
+                    
+            if token:
+                print(f"[{name}] Large file warning received. Confirming download...")
+                resp = await client.get(url, params={"id": file_id, "confirm": token})
+                
+            if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
+                with open(output_file, "wb") as f:
+                    f.write(resp.content)
+                print(f"[{name}] Direct HTTP download succeeded ({len(resp.content)} bytes).")
+                return True
+            else:
+                print(f"[{name}] Direct download did not return a valid PDF (status: {resp.status_code}).")
+    except Exception as e:
+        print(f"[{name}] Direct HTTP download failed: {e}")
+        
+    print(f"[{name}] Falling back to gdown download...")
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: gdown.download(id=file_id, output=output_file, quiet=True))
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 1000:
+            with open(output_file, "rb") as f:
+                magic = f.read(4)
+            if magic == b"%PDF":
+                print(f"[{name}] gdown fallback download succeeded.")
+                return True
+    except Exception as e:
+        print(f"[{name}] gdown fallback download failed: {e}")
+        
+    return False
+
 async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | None:
     """
     Scrapes the careerswave.in website for a given newspaper.
@@ -89,25 +139,8 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
             
             output_file = f"{slug}_{newspaper_date}.pdf"
             
-            print(f"[{name}] Downloading via gdown...")
-            # Run gdown blocking call in thread to avoid blocking asyncio loop
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: gdown.download(id=file_id, output=output_file, quiet=False))
-            
-            if not os.path.exists(output_file):
-                print(f"[{name}] Failed: gdown output not found")
-                return None
-            
-            if os.path.getsize(output_file) <= 1000:
-                print(f"[{name}] Failed: downloaded file too small ({os.path.getsize(output_file)} bytes), likely an error page")
-                os.remove(output_file)
-                return None
-            
-            with open(output_file, 'rb') as f:
-                magic = f.read(4)
-            if magic != b'%PDF':
-                print(f"[{name}] Failed: downloaded file is not a valid PDF (magic bytes: {magic!r})")
-                os.remove(output_file)
+            if not await download_from_gdrive(file_id, output_file, name):
+                print(f"[{name}] Failed to download PDF from Google Drive")
                 return None
                 
             return os.path.abspath(output_file), newspaper_date
