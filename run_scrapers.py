@@ -14,35 +14,92 @@ from database.operations import (
 from utils.helpers import get_today, format_date
 from datetime import datetime, date, timezone
 
+def split_pdf_if_large(filepath: str, max_size_mb: float = 45.0) -> list[str]:
+    """Splits a PDF file into multiple files if its size exceeds max_size_mb.
+    Returns a list of file paths. If the file is small or not a PDF, returns [filepath].
+    """
+    import os
+    if not filepath.endswith(".pdf") or not os.path.exists(filepath):
+        return [filepath]
+        
+    file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+    if file_size_mb <= max_size_mb:
+        return [filepath]
+        
+    print(f"File {filepath} is {file_size_mb:.2f} MB, which exceeds {max_size_mb} MB. Splitting...")
+    try:
+        from pypdf import PdfReader, PdfWriter
+        
+        reader = PdfReader(filepath)
+        total_pages = len(reader.pages)
+        
+        num_parts = int(file_size_mb // max_size_mb) + 1
+        pages_per_part = (total_pages // num_parts) + 1
+        
+        parts = []
+        base, ext = os.path.splitext(filepath)
+        
+        for i in range(num_parts):
+            start_page = i * pages_per_part
+            end_page = min(start_page + pages_per_part, total_pages)
+            if start_page >= total_pages:
+                break
+                
+            writer = PdfWriter()
+            for page_num in range(start_page, end_page):
+                writer.add_page(reader.pages[page_num])
+                
+            part_path = f"{base}_part{i+1}{ext}"
+            with open(part_path, "wb") as f:
+                writer.write(f)
+                
+            part_size_mb = os.path.getsize(part_path) / (1024 * 1024)
+            print(f"Created part {i+1}: {part_path} ({part_size_mb:.2f} MB, pages {start_page+1}-{end_page})")
+            parts.append(part_path)
+            
+        return parts
+    except Exception as e:
+        print(f"Error splitting PDF: {e}")
+        return [filepath]
+
 async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, newspaper_date: date):
     """Deliver the edition to all subscribed users."""
     subscribers = await get_subscribers_for_title("", title_id)
     print(f"[{title_name}] Found {len(subscribers)} subscribers for delivery.")
     
     friendly_date = format_date(newspaper_date)
+    file_ids = file_id.split(",")
+    
     for user_id in subscribers:
         if await has_been_delivered("", user_id, edition_id):
             continue
             
         try:
-            await bot.send_document(
-                chat_id=user_id,
-                document=file_id,
-                caption=f"📰 Here is your **{title_name}** for {friendly_date}!",
-                parse_mode="Markdown"
-            )
+            for idx, fid in enumerate(file_ids):
+                part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
+                await bot.send_document(
+                    chat_id=user_id,
+                    document=fid,
+                    caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                    parse_mode="Markdown"
+                )
             await log_delivery("", user_id, edition_id, "success")
             print(f"[{title_name}] Delivered to {user_id}")
         except RetryAfter as e:
             print(f"Rate limited! Sleeping for {e.retry_after}s")
             await asyncio.sleep(e.retry_after)
-            await bot.send_document(
-                chat_id=user_id,
-                document=file_id,
-                caption=f"📰 Here is your **{title_name}** for {friendly_date}!",
-                parse_mode="Markdown"
-            )
-            await log_delivery("", user_id, edition_id, "success")
+            try:
+                for idx, fid in enumerate(file_ids):
+                    part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
+                    await bot.send_document(
+                        chat_id=user_id,
+                        document=fid,
+                        caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                        parse_mode="Markdown"
+                    )
+                await log_delivery("", user_id, edition_id, "success")
+            except Exception as ex:
+                print(f"[{title_name}] Retry failed: {ex}")
         except Exception as e:
             print(f"[{title_name}] Failed to deliver to {user_id}: {e}")
             await log_delivery("", user_id, edition_id, "failed")
@@ -88,25 +145,30 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
             if not await has_been_delivered("", user_id, edition_id):
                 friendly_date = format_date(scrape_date)
                 print(f"[Catch-up] Delivering {title_name} to {user_id}...")
+                file_ids = file_id.split(",")
                 try:
-                    await bot.send_document(
-                        chat_id=user_id,
-                        document=file_id,
-                        caption=f"📰 Here is your **{title_name}** for {friendly_date}!",
-                        parse_mode="Markdown"
-                    )
+                    for idx, fid in enumerate(file_ids):
+                        part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
+                        await bot.send_document(
+                            chat_id=user_id,
+                            document=fid,
+                            caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                            parse_mode="Markdown"
+                        )
                     await log_delivery("", user_id, edition_id, "success")
                     print(f"[Catch-up] Delivered to {user_id}")
                 except RetryAfter as e:
                     print(f"[Catch-up] Rate limited! Sleeping for {e.retry_after}s")
                     await asyncio.sleep(e.retry_after)
                     try:
-                        await bot.send_document(
-                            chat_id=user_id,
-                            document=file_id,
-                            caption=f"📰 Here is your **{title_name}** for {friendly_date}!",
-                            parse_mode="Markdown"
-                        )
+                        for idx, fid in enumerate(file_ids):
+                            part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
+                            await bot.send_document(
+                                chat_id=user_id,
+                                document=fid,
+                                caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                                parse_mode="Markdown"
+                            )
                         await log_delivery("", user_id, edition_id, "success")
                     except Exception as ex:
                         print(f"[Catch-up] Retry failed: {ex}")
@@ -178,21 +240,32 @@ async def main():
         # 3. Upload to Telegram Storage Channel
         friendly_date = format_date(newspaper_date)
         print(f"[{name}] Uploading to Telegram Channel...")
+        file_parts = []
         try:
-            with open(output_file, 'rb') as f:
-                message = await bot.send_document(
-                    chat_id=channel_id,
-                    document=f,
-                    caption=f"📰 **{name}** • {friendly_date}",
-                    parse_mode="Markdown",
-                    read_timeout=300,
-                    write_timeout=300,
-                    connect_timeout=60,
-                    pool_timeout=60
-                )
+            # Split PDF if it is large (> 45 MB)
+            file_parts = split_pdf_if_large(output_file, max_size_mb=45.0)
             
-            telegram_file_id = message.document.file_id
-            message_id = message.message_id
+            telegram_file_ids = []
+            message_ids = []
+            
+            for idx, part_file in enumerate(file_parts):
+                part_suffix = f" (Part {idx+1}/{len(file_parts)})" if len(file_parts) > 1 else ""
+                with open(part_file, 'rb') as f:
+                    message = await bot.send_document(
+                        chat_id=channel_id,
+                        document=f,
+                        caption=f"📰 **{name}**{part_suffix} • {friendly_date}",
+                        parse_mode="Markdown",
+                        read_timeout=300,
+                        write_timeout=300,
+                        connect_timeout=60,
+                        pool_timeout=60
+                    )
+                telegram_file_ids.append(message.document.file_id)
+                message_ids.append(str(message.message_id))
+            
+            combined_file_id = ",".join(telegram_file_ids)
+            combined_message_id = ",".join(message_ids)
             
             # 4. Update Database
             edition_id = await add_edition(
@@ -203,12 +276,14 @@ async def main():
                 status="stored"
             )
             
+            first_message_id = int(message_ids[0]) if message_ids else None
+            
             await update_edition_status(
                 db_path="",
                 edition_id=edition_id,
                 status="delivered", 
-                file_id=telegram_file_id,
-                message_id=message_id
+                file_id=combined_file_id,
+                message_id=first_message_id
             )
             
             # Mark the scrape as successfully found!
@@ -217,14 +292,24 @@ async def main():
             print(f"[{name}] Success! Database updated.")
             
             # 5. Deliver to Users
-            await deliver_to_subscribers(bot, edition_id, telegram_file_id, title["id"], name, newspaper_date)
+            await deliver_to_subscribers(bot, edition_id, combined_file_id, title["id"], name, newspaper_date)
                 
         except Exception as e:
             print(f"[{name}] Error during upload/delivery: {e}")
             
         finally:
-            if os.path.exists(output_file):
-                os.remove(output_file)
+            # Clean up all created files
+            for part_file in file_parts:
+                try:
+                    if os.path.exists(part_file):
+                        os.remove(part_file)
+                except Exception as e:
+                    print(f"Failed to remove part file {part_file}: {e}")
+            try:
+                if os.path.exists(output_file):
+                    os.remove(output_file)
+            except Exception as e:
+                print(f"Failed to remove output file {output_file}: {e}")
 
     # 5.5 Catch-up deliveries for any missed subscriptions
     await catch_up_deliveries(bot, today)
