@@ -38,7 +38,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "📌 <b>Quick Start</b>\n"
         "┌─────────────────────────────\n"
         "│ 1️⃣  /subscribe — Pick your papers\n"
-        "│ 2️⃣  /get &lt;title&gt; — Grab a specific paper\n"
+        "│ 2️⃣  /get — Browse the archives\n"
         "└─────────────────────────────\n\n"
         "📖 <b>All Commands</b>\n\n"
         "  <b>Browsing</b>\n"
@@ -48,7 +48,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "  /unsub &lt;title&gt; or /unsubscribe — Quick unsubscribe\n"
         "  /subscriptions — View active subs\n\n"
         "  <b>Reading</b>\n"
-        "  /get &lt;title&gt; [date] — Fetch an edition\n\n"
+        "  /get — Interactive archive browser\n\n"
         "  /help — Full command reference\n\n"
         "Let's get you set up! Tap /subscribe to begin 🚀"
     )
@@ -71,10 +71,11 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "  /sub &lt;title&gt; — Quick-subscribe by name\n"
         "  /unsub &lt;title&gt; or /unsubscribe — Quick-unsubscribe by name\n"
         "  /subscriptions — View &amp; manage your active subs\n\n"
+
         "📰 <b>Reading &amp; Retrieval</b>\n"
-        "  /get &lt;title&gt; — Today's edition of a title\n"
-        "  /get &lt;title&gt; &lt;DD-MM-YYYY&gt; — Archived edition\n\n"
-        "💡 <i>Tip: You can use partial names with /sub and /get — "
+        "  /get — Interactive archive browser (select title and date)\n\n"
+
+        "💡 <i>Tip: You can use partial names with /sub — "
         "the bot will fuzzy-match them for you!</i>"
     )
 

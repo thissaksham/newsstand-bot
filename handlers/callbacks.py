@@ -16,7 +16,6 @@ from .subscribe import (
     handle_quickunsub_callback,
 )
 from .subscriptions import handle_unsub_callback
-from .get import handle_quickget_callback
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,6 @@ _ROUTES: list[tuple[str, object]] = [
     ("unsub:",      handle_unsub_callback),
     ("quicksub:",   handle_quicksub_callback),
     ("quickunsub:", handle_quickunsub_callback),
-    ("quickget:",   handle_quickget_callback),
     ("done",        handle_done_callback),
 ]
 
