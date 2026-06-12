@@ -9,7 +9,8 @@ from config import Config
 from database.operations import (
     add_edition, update_edition_status, get_pending_scrapes,
     get_subscribers_for_title, log_delivery, has_been_delivered,
-    upsert_scrape_status, get_failed_scrapes, _get_client
+    upsert_scrape_status, get_failed_scrapes, _get_client,
+    get_edition
 )
 from utils.helpers import get_today, format_date
 from datetime import datetime, date, timezone
@@ -206,6 +207,15 @@ async def main():
     for title in pending_titles:
         name = title["name"]
         slug = title["slug"]
+        
+        # Check if already scraped and uploaded today to prevent duplicate channel uploads
+        existing_edition = await get_edition("", title["id"], today)
+        if existing_edition and existing_edition.get("file_id") and existing_edition.get("status") == "delivered":
+            print(f"[{name}] Already scraped and uploaded to channel today. Skipping upload.")
+            await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
+            await deliver_to_subscribers(bot, existing_edition["id"], existing_edition["file_id"], title["id"], name, today)
+            continue
+            
         source_module_name = title.get("source")
         
         # We also need the source_url from the config.yaml to pass to the scraper
