@@ -36,20 +36,18 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
         
         for a in soup.find_all('a', href=True):
             if 'drive.google.com/file/d/' in a['href']:
-                parent_text = a.parent.get_text(strip=True)
-                date_match = re.search(r'(\d{1,2}\s+[A-Za-z]+\s+\d{4})', parent_text)
+                parent_text = a.parent.get_text(strip=True).lower()
                 
-                if date_match:
-                    date_str = date_match.group(1)
-                    try:
-                        link_date = datetime.strptime(date_str, "%d %b %Y").date()
-                        if link_date == today_date:
-                            target_a = a
-                            newspaper_date = link_date
-                            break
-                    except ValueError:
-                        continue
+                # Flexible date checking: handles '12 Jun', '12th June', '12-06-2026', etc.
+                nums = set(re.findall(r'\d+', parent_text))
+                has_day = str(today_date.day) in nums or f"{today_date.day:02d}" in nums
+                has_month_text = today_date.strftime('%b').lower() in parent_text or today_date.strftime('%B').lower() in parent_text
+                has_month_num = str(today_date.month) in nums or f"{today_date.month:02d}" in nums
                 
+                if has_day and (has_month_text or has_month_num):
+                    target_a = a
+                    newspaper_date = today_date
+                    break
         if not target_a:
             print(f"[{name}] Failed: Today's edition ({today_date.strftime('%d %b %Y')}) not found on website yet")
             return None
