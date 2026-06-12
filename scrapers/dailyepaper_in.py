@@ -30,14 +30,28 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
         
         soup = BeautifulSoup(html, 'html.parser')
         
+        today_date = get_today()
         target_a = None
+        newspaper_date = None
+        
         for a in soup.find_all('a', href=True):
             if 'drive.google.com/file/d/' in a['href']:
-                target_a = a
-                break
+                parent_text = a.parent.get_text(strip=True)
+                date_match = re.search(r'(\d{1,2}\s+[A-Za-z]+\s+\d{4})', parent_text)
+                
+                if date_match:
+                    date_str = date_match.group(1)
+                    try:
+                        link_date = datetime.strptime(date_str, "%d %b %Y").date()
+                        if link_date == today_date:
+                            target_a = a
+                            newspaper_date = link_date
+                            break
+                    except ValueError:
+                        continue
                 
         if not target_a:
-            print(f"[{name}] Failed: No Drive links found")
+            print(f"[{name}] Failed: Today's edition ({today_date.strftime('%d %b %Y')}) not found on website yet")
             return None
             
         target_drive_url = target_a['href']
@@ -46,18 +60,6 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
             return None
             
         file_id = match.group(1)
-        
-        # Extract date from the parent element text (e.g., "11 Jun 2026:Download")
-        newspaper_date = get_today()
-        parent_text = target_a.parent.get_text(strip=True)
-        date_match = re.search(r'(\d{1,2}\s+[A-Za-z]+\s+\d{4})', parent_text)
-        
-        if date_match:
-            date_str = date_match.group(1)
-            try:
-                newspaper_date = datetime.strptime(date_str, "%d %b %Y").date()
-            except ValueError:
-                pass
                 
         output_file = f"{slug}_{newspaper_date}.pdf"
         
