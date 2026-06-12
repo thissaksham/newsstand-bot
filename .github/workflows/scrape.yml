@@ -2,9 +2,9 @@ name: Daily Newspaper Scraper
 
 on:
   schedule:
-    # Runs at 00:00 to 06:00 UTC every day (05:30 AM to 11:30 AM IST)
-    # This acts as our retry mechanism. The python script handles tracking what succeeded.
-    - cron: '0 0-6 * * *'
+    # Runs at 17 minutes past the hour from 00:00 to 06:00 UTC every day
+    # We use an odd minute (17) because GitHub Actions often drops top-of-the-hour (0) crons due to high global load.
+    - cron: '17 0-6 * * *'
   workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
 
 jobs:
