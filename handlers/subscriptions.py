@@ -95,7 +95,7 @@ async def handle_unsub_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     user_id = update.effective_user.id
     db_path = context.bot_data["config"].db_path
-    title_id = query.data.split(":", 1)[1]
+    title_id = int(query.data.split(":", 1)[1])
 
     await unsubscribe(db_path, user_id, title_id)
 

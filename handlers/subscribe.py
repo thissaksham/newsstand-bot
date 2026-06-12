@@ -83,6 +83,37 @@ async def subscribe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_lang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     language = query.data.split(":", 1)[1]
+
+    if language == "__back__":
+        # Re-show the language picker
+        db_path = context.bot_data["config"].db_path
+        all_titles = await get_all_titles(db_path)
+        languages: list[str] = list(dict.fromkeys(t["language"] for t in all_titles))
+
+        if not languages:
+            await query.edit_message_text(
+                "📭 No titles are configured yet. Check back later!",
+                parse_mode="HTML",
+            )
+            return
+
+        buttons = [
+            [InlineKeyboardButton(
+                f"{_flag(lang)} {lang.title()}",
+                callback_data=f"lang:{lang}",
+            )]
+            for lang in languages
+        ]
+
+        await query.edit_message_text(
+            "📰 <b>Subscribe — Choose a Language</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Pick a language to browse available titles:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
+
     db_path = context.bot_data["config"].db_path
     await _show_titles_page(query, update.effective_user.id, language, page=0, db_path=db_path)
 
@@ -165,7 +196,7 @@ async def handle_toggle_callback(update: Update, context: ContextTypes.DEFAULT_T
     db_path = context.bot_data["config"].db_path
     # toggle:{title_id}:{language}:{page}
     parts = query.data.split(":")
-    title_id = parts[1]
+    title_id = int(parts[1])
     language = parts[2]
     page = int(parts[3])
 
@@ -227,11 +258,11 @@ async def sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     all_titles = await get_all_titles(db_path)
 
-    match = fuzzy_match_title(query_text, all_titles)
+    matches = fuzzy_match_title(query_text, all_titles)
 
     # Exact / single best match
-    if match and isinstance(match, dict):
-        title = match
+    if len(matches) == 1:
+        title, score = matches[0]
         already = await is_subscribed(db_path, user_id, title["id"])
         if already:
             await update.message.reply_text(
@@ -248,13 +279,13 @@ async def sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # Multiple possible matches
-    if match and isinstance(match, list):
+    if len(matches) > 1:
         buttons = [
             [InlineKeyboardButton(
                 f"📰 {t['name']}",
                 callback_data=f"quicksub:{t['id']}",
             )]
-            for t in match[:3]
+            for t, _score in matches[:3]
         ]
         await update.message.reply_text(
             f"🔍 Multiple matches for <b>{query_text}</b>:\n"
@@ -300,10 +331,10 @@ async def unsub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     all_titles = await get_all_titles(db_path)
 
-    match = fuzzy_match_title(query_text, all_titles)
+    matches = fuzzy_match_title(query_text, all_titles)
 
-    if match and isinstance(match, dict):
-        title = match
+    if len(matches) == 1:
+        title, score = matches[0]
         if not await is_subscribed(db_path, user_id, title["id"]):
             await update.message.reply_text(
                 f"ℹ️ You're not subscribed to <b>{title['name']}</b>.",
@@ -318,13 +349,13 @@ async def unsub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    if match and isinstance(match, list):
+    if len(matches) > 1:
         buttons = [
             [InlineKeyboardButton(
                 f"📰 {t['name']}",
                 callback_data=f"quickunsub:{t['id']}",
             )]
-            for t in match[:3]
+            for t, _score in matches[:3]
         ]
         await update.message.reply_text(
             f"🔍 Multiple matches for <b>{query_text}</b>:\n"
@@ -339,3 +370,58 @@ async def unsub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Use /subscriptions to see your active subscriptions.",
         parse_mode="HTML",
     )
+
+
+async def handle_quicksub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    parts = query.data.split(":")
+    title_id = int(parts[1])
+    user_id = update.effective_user.id
+    db_path = context.bot_data["config"].db_path
+    
+    all_titles = await get_all_titles(db_path)
+    title = next((t for t in all_titles if t["id"] == title_id), None)
+    title_name = title["name"] if title else f"Title #{title_id}"
+
+    already = await is_subscribed(db_path, user_id, title_id)
+    if already:
+        await query.edit_message_text(
+            f"ℹ️ You're already subscribed to <b>{title_name}</b>.",
+            parse_mode="HTML",
+        )
+        return
+
+    await subscribe(db_path, user_id, title_id)
+    await query.edit_message_text(
+        f"✅ Subscribed to <b>{title_name}</b>!\n"
+        "📬 You'll receive it automatically each morning.",
+        parse_mode="HTML",
+    )
+
+
+async def handle_quickunsub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    parts = query.data.split(":")
+    title_id = int(parts[1])
+    user_id = update.effective_user.id
+    db_path = context.bot_data["config"].db_path
+
+    all_titles = await get_all_titles(db_path)
+    title = next((t for t in all_titles if t["id"] == title_id), None)
+    title_name = title["name"] if title else f"Title #{title_id}"
+
+    already = await is_subscribed(db_path, user_id, title_id)
+    if not already:
+        await query.edit_message_text(
+            f"ℹ️ You're not subscribed to <b>{title_name}</b>.",
+            parse_mode="HTML",
+        )
+        return
+
+    await unsubscribe(db_path, user_id, title_id)
+    await query.edit_message_text(
+        f"🗑️ Unsubscribed from <b>{title_name}</b>.\n"
+        "You won't receive this title anymore.",
+        parse_mode="HTML",
+    )
+

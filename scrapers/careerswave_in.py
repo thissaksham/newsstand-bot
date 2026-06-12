@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 import httpx
 import gdown
 from bs4 import BeautifulSoup
@@ -39,8 +40,9 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
                     has_day = str(today_date.day) in nums or f"{today_date.day:02d}" in nums
                     has_month_text = today_date.strftime('%b').lower() in parent_text or today_date.strftime('%B').lower() in parent_text
                     has_month_num = str(today_date.month) in nums or f"{today_date.month:02d}" in nums
+                    has_year = str(today_date.year) in nums
                     
-                    if has_day and (has_month_text or has_month_num):
+                    if has_day and (has_month_text or has_month_num) and has_year:
                         target_drive_url = a['href']
                         newspaper_date = today_date
                         break
@@ -59,12 +61,23 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
             
             print(f"[{name}] Downloading via gdown...")
             # Run gdown blocking call in thread to avoid blocking asyncio loop
-            import asyncio
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, lambda: gdown.download(id=file_id, output=output_file, quiet=False))
             
             if not os.path.exists(output_file):
                 print(f"[{name}] Failed: gdown output not found")
+                return None
+            
+            if os.path.getsize(output_file) <= 1000:
+                print(f"[{name}] Failed: downloaded file too small ({os.path.getsize(output_file)} bytes), likely an error page")
+                os.remove(output_file)
+                return None
+            
+            with open(output_file, 'rb') as f:
+                magic = f.read(4)
+            if magic != b'%PDF':
+                print(f"[{name}] Failed: downloaded file is not a valid PDF (magic bytes: {magic!r})")
+                os.remove(output_file)
                 return None
                 
             return os.path.abspath(output_file), newspaper_date

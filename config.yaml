@@ -228,7 +228,7 @@ titles:
   scrape_website: careerswave_in
 
 - name: आईनेक्स्ट लाइव
-  slug: iNext Live
+  slug: inext-live
   source_url: https://dailyepaper.in/inext-live-epaper-epaper-download-2026/
   language: Hindi
   category: Newspaper
@@ -262,8 +262,8 @@ titles:
   category: Newspaper
   scrape_website: careerswave_in
 
-- name: The Pioneer
-  slug: the-pioneer
+- name: The Pioneer (Hindi)
+  slug: the-pioneer-hindi
   source_url: https://www.careerswave.in/the-pioneer-epaper-pdf-free-download/
   language: Hindi
   category: Newspaper
@@ -318,8 +318,8 @@ titles:
   category: Newspaper
   scrape_website: careerswave_in
 
-- name: Business Standard
-  slug: business-standard
+- name: Business Standard (Hindi)
+  slug: business-standard-hindi
   source_url: https://www.careerswave.in/business-standard-newspaper-in-pdf/
   language: Hindi
   category: Newspaper
@@ -392,7 +392,7 @@ packs:
 - name: English Dailies
   description: Top English-language newspapers from across India
   titles:
-  - times-of-india
+  - the-times-of-india
   - hindustan-times
   - the-hindu
   - the-indian-express
@@ -404,7 +404,7 @@ packs:
   titles:
   - dainik-bhaskar
   - dainik-jagran
-  - hindustan-dainik
+  - hindustan
   - amar-ujala
   - navbharat-times
   - rajasthan-patrika
@@ -412,9 +412,9 @@ packs:
   description: Financial and business newspapers
   titles:
   - economic-times
-  - mint
+  - live-mint
   - business-standard
-  - financial-express
+  - the-financial-express
 - name: South Indian Pack
   description: Newspapers from the four southern states
   titles:

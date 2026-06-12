@@ -5,7 +5,7 @@ Database CRUD operations using the Supabase API Client.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 import os
 
@@ -308,23 +308,22 @@ async def upsert_scrape_status(
     existing = await get_scrape_status(db_path, title_id, scrape_date)
     
     if existing:
-        updates = {
-            "status": status,
-            "last_attempt_at": datetime.utcnow().isoformat()
-        }
+        attempts = existing.get("attempts", 0)
         if increment_attempts:
-            updates["attempts"] = existing.get("attempts", 0) + 1
-            
-        await db.table("daily_scrape_status").update(updates).eq("id", existing["id"]).execute()
+            attempts += 1
     else:
         attempts = 1 if increment_attempts else 0
-        await db.table("daily_scrape_status").insert({
-            "title_id": title_id,
-            "date": scrape_date.isoformat(),
-            "status": status,
-            "attempts": attempts,
-            "last_attempt_at": datetime.utcnow().isoformat()
-        }).execute()
+
+    data = {
+        "title_id": title_id,
+        "date": scrape_date.isoformat(),
+        "status": status,
+        "last_attempt_at": datetime.now(timezone.utc).isoformat(),
+        "attempts": attempts,
+    }
+    await db.table("daily_scrape_status").upsert(
+        data, on_conflict="title_id,date"
+    ).execute()
 
 
 async def get_pending_scrapes(db_path: str, scrape_date: date, max_attempts: int = 3) -> list[dict[str, Any]]:
@@ -347,7 +346,7 @@ async def get_pending_scrapes(db_path: str, scrape_date: date, max_attempts: int
         st = status_map.get(tid)
         if not st:
             pending.append(t)
-        elif st["status"] == "pending" and st["attempts"] < max_attempts:
+        elif st["status"] in ("pending", "failed") and st["attempts"] < max_attempts:
             pending.append(t)
             
     return pending
@@ -387,7 +386,45 @@ async def sync_titles_from_config(db_path: str, titles: list) -> None:
             await db.table('titles').update({'is_active': 0}).eq('id', row['id']).execute()
 
 async def sync_packs_from_config(db_path: str, packs: list) -> None:
-    pass
+    db = await _get_client()
+    
+    # 1. Map title slug to title id
+    titles_resp = await db.table("titles").select("id, slug").execute()
+    title_slug_map = {row["slug"]: row["id"] for row in titles_resp.data}
+    
+    config_pack_names = []
+    for p in packs:
+        name = getattr(p, "name", "")
+        description = getattr(p, "description", "")
+        title_slugs = getattr(p, "title_slugs", [])
+        
+        config_pack_names.append(name)
+        
+        # Upsert pack
+        pack_data = {
+            "name": name,
+            "description": description,
+        }
+        pack_resp = await db.table("packs").upsert(pack_data, on_conflict="name").execute()
+        if not pack_resp.data:
+            continue
+            
+        pack_id = pack_resp.data[0]["id"]
+        
+        # Get resolved title IDs
+        title_ids = [title_slug_map[slug] for slug in title_slugs if slug in title_slug_map]
+        
+        # Clear existing pack titles and insert new ones
+        await db.table("pack_titles").delete().eq("pack_id", pack_id).execute()
+        if title_ids:
+            pt_data = [{"pack_id": pack_id, "title_id": tid} for tid in title_ids]
+            await db.table("pack_titles").insert(pt_data).execute()
+            
+    # 2. Delete packs no longer in config
+    db_packs = await db.table("packs").select("id, name").execute()
+    for row in db_packs.data:
+        if row["name"] not in config_pack_names:
+            await db.table("packs").delete().eq("id", row["id"]).execute()
 
 
 
@@ -400,10 +437,6 @@ async def get_failed_scrapes(db_path: str, scrape_date: date) -> list[str]:
 
 async def get_titles_by_language(db_path: str, language: str) -> list[dict]:
     db = await _get_client()
-    resp = await db.table('titles').select('*').eq('language', language.lower()).eq('is_active', 1).order('name').execute()
-    # Some titles in the database may have capitalized languages, some lowercase, so we need to match case-insensitively, 
-    # but postgrest doesn't have an easy case-insensitive eq (ilike exists but only for pattern matching). 
-    # Actually, postgrest has .ilike() for case-insensitive exact matching if we don't use wildcards.
     resp = await db.table('titles').select('*').ilike('language', language).eq('is_active', 1).order('name').execute()
     return resp.data
 

@@ -7,18 +7,27 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from .subscribe import handle_lang_callback, handle_toggle_callback, handle_page_callback, handle_done_callback
+from .subscribe import (
+    handle_lang_callback,
+    handle_toggle_callback,
+    handle_page_callback,
+    handle_done_callback,
+    handle_quicksub_callback,
+    handle_quickunsub_callback,
+)
 from .subscriptions import handle_unsub_callback
 
 logger = logging.getLogger(__name__)
 
 # ── Routing table ────────────────────────────────────────────────────────────
 _ROUTES: list[tuple[str, object]] = [
-    ("lang:",     handle_lang_callback),
-    ("toggle:",   handle_toggle_callback),
-    ("page:",     handle_page_callback),
-    ("unsub:",    handle_unsub_callback),
-    ("done",      handle_done_callback),
+    ("lang:",       handle_lang_callback),
+    ("toggle:",     handle_toggle_callback),
+    ("page:",       handle_page_callback),
+    ("unsub:",      handle_unsub_callback),
+    ("quicksub:",   handle_quicksub_callback),
+    ("quickunsub:", handle_quickunsub_callback),
+    ("done",        handle_done_callback),
 ]
 
 

@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 import urllib.request
 import gdown
 from bs4 import BeautifulSoup
@@ -20,7 +21,6 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
         )
         
         # Run urllib in executor to avoid blocking the event loop
-        import asyncio
         loop = asyncio.get_running_loop()
         def fetch_html():
             with urllib.request.urlopen(req, timeout=60) as response:
@@ -43,8 +43,9 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
                 has_day = str(today_date.day) in nums or f"{today_date.day:02d}" in nums
                 has_month_text = today_date.strftime('%b').lower() in parent_text or today_date.strftime('%B').lower() in parent_text
                 has_month_num = str(today_date.month) in nums or f"{today_date.month:02d}" in nums
+                has_year = str(today_date.year) in nums
                 
-                if has_day and (has_month_text or has_month_num):
+                if has_day and (has_month_text or has_month_num) and has_year:
                     target_a = a
                     newspaper_date = today_date
                     break
@@ -66,6 +67,18 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
         
         if not os.path.exists(output_file):
             print(f"[{name}] Failed: gdown output not found")
+            return None
+        
+        if os.path.getsize(output_file) <= 1000:
+            print(f"[{name}] Failed: downloaded file too small ({os.path.getsize(output_file)} bytes), likely an error page")
+            os.remove(output_file)
+            return None
+        
+        with open(output_file, 'rb') as f:
+            magic = f.read(4)
+        if magic != b'%PDF':
+            print(f"[{name}] Failed: downloaded file is not a valid PDF (magic bytes: {magic!r})")
+            os.remove(output_file)
             return None
             
         return os.path.abspath(output_file), newspaper_date

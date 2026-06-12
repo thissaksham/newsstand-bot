@@ -31,6 +31,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("subscribe", subscribe_handler))
     app.add_handler(CommandHandler("sub", sub_handler))
     app.add_handler(CommandHandler("unsub", unsub_handler))
+    app.add_handler(CommandHandler("unsubscribe", unsub_handler))
     app.add_handler(CommandHandler("subscriptions", subscriptions_handler))
 
     # ── Callback query router (catch-all for inline keyboard presses) ────────

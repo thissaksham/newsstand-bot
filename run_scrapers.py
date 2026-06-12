@@ -12,7 +12,7 @@ from database.operations import (
     upsert_scrape_status, get_failed_scrapes
 )
 from utils.helpers import get_today, format_date
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, newspaper_date: date):
     """Deliver the edition to all subscribed users."""
@@ -58,7 +58,7 @@ async def main():
         print("Missing BOT_TOKEN or STORAGE_CHANNEL_ID in .env")
         return
 
-    config = Config()
+    config = Config.get()
     today = get_today()
     bot = Bot(token=bot_token)
     
@@ -150,7 +150,7 @@ async def main():
             print(f"[{name}] Success! Database updated.")
             
             # 5. Deliver to Users
-            await deliver_to_subscribers(bot, edition_id, telegram_file_id, title["id"], name, friendly_date)
+            await deliver_to_subscribers(bot, edition_id, telegram_file_id, title["id"], name, newspaper_date)
                 
         except Exception as e:
             print(f"[{name}] Error during upload/delivery: {e}")
@@ -160,7 +160,7 @@ async def main():
                 os.remove(output_file)
 
     # 6. Send Failure Report on the last run of the day (06:xx UTC -> 11:30 IST)
-    if datetime.utcnow().hour == 6:
+    if datetime.now(timezone.utc).hour == 6:
         failed_titles = await get_failed_scrapes("", today)
         if failed_titles:
             report = "⚠️ *Daily Scrape Failure Report*\n\nThe following newspapers could not be found today after 6 attempts:\n"

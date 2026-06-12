@@ -51,7 +51,7 @@ BOT_COMMANDS = [
 
 async def post_init(application: Application) -> None:
     """Runs after Application.initialize() — set up DB, scrapers, scheduler."""
-    config = Config()
+    config = Config.get()
     
     # 1. Sync titles and packs from config.yaml to DB
     logger.info("Syncing titles from config...")
@@ -101,7 +101,7 @@ def main() -> None:
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
-    config = Config()
+    config = Config.get()
     
     if not config.bot_token:
         logger.error("BOT_TOKEN not set! Copy .env.example to .env and fill in your token.")
