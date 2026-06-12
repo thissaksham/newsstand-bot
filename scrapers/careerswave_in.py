@@ -24,29 +24,36 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
                 print(f"[{name}] Failed: HTTP {resp.status_code}")
                 return None
                 
-            drive_links = re.findall(r'https://drive\.google\.com/file/d/[a-zA-Z0-9_-]+', resp.text)
-            if not drive_links:
-                print(f"[{name}] Failed: No Drive links found")
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            today_date = get_today()
+            
+            target_drive_url = None
+            newspaper_date = None
+            
+            for a in soup.find_all('a', href=True):
+                if 'drive.google.com/file/d/' in a['href']:
+                    parent_text = a.parent.get_text(strip=True).lower()
+                    
+                    # Flexible date checking
+                    nums = set(re.findall(r'\d+', parent_text))
+                    has_day = str(today_date.day) in nums or f"{today_date.day:02d}" in nums
+                    has_month_text = today_date.strftime('%b').lower() in parent_text or today_date.strftime('%B').lower() in parent_text
+                    has_month_num = str(today_date.month) in nums or f"{today_date.month:02d}" in nums
+                    
+                    if has_day and (has_month_text or has_month_num):
+                        target_drive_url = a['href']
+                        newspaper_date = today_date
+                        break
+                        
+            if not target_drive_url:
+                print(f"[{name}] Failed: Today's edition ({today_date.strftime('%d %b %Y')}) not found on website yet")
                 return None
                 
-            target_drive_url = drive_links[0]
             match = re.search(r'/d/([a-zA-Z0-9_-]+)', target_drive_url)
             if not match:
                 return None
                 
             file_id = match.group(1)
-            
-            # Extract date from HTML
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            time_tag = soup.find('time', class_='entry-date updated-date') or soup.find('time', class_='entry-date published')
-            
-            newspaper_date = get_today()
-            if time_tag and time_tag.get('datetime'):
-                dt_str = time_tag['datetime'].split('T')[0]
-                try:
-                    newspaper_date = datetime.strptime(dt_str, "%Y-%m-%d").date()
-                except ValueError:
-                    pass
             
             output_file = f"{slug}_{newspaper_date}.pdf"
             
