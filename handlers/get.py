@@ -18,7 +18,7 @@ from database.operations import (
     get_all_titles,
     get_edition,
 )
-from utils.helpers import format_date
+from utils.helpers import format_date, fuzzy_match_title, get_today
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,76 @@ SELECT_LANGUAGE, SELECT_TITLE, SELECT_DATE = range(3)
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def get_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start the /get conversation and ask for language."""
+    """Start the /get conversation and ask for language, or direct lookup if arguments provided."""
+    if context.args:
+        target_date = get_today()
+        title_query = " ".join(context.args)
+        
+        # Check if the last argument is a date
+        if len(context.args) > 1:
+            last_arg = context.args[-1]
+            parsed_date = None
+            for fmt in ["%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d.%m.%Y"]:
+                try:
+                    parsed_date = datetime.strptime(last_arg, fmt).date()
+                    break
+                except ValueError:
+                    continue
+            if parsed_date:
+                target_date = parsed_date
+                title_query = " ".join(context.args[:-1])
+
+        db_path = context.bot_data["config"].db_path
+        all_titles = await get_all_titles(db_path)
+        matches = fuzzy_match_title(title_query, all_titles)
+        
+        if len(matches) == 1:
+            title, score = matches[0]
+            edition = await get_edition(db_path, title["id"], target_date)
+            if edition and edition.get("file_id"):
+                friendly_date = format_date(target_date)
+                await update.message.reply_text(
+                    f"✅ Sending <b>{title['name']}</b> for {friendly_date}...",
+                    parse_mode="HTML",
+                )
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=edition["file_id"],
+                    caption=f"📰 <b>{title['name']}</b>  •  {friendly_date}",
+                    parse_mode="HTML",
+                )
+            else:
+                friendly_date = format_date(target_date)
+                await update.message.reply_text(
+                    f"📭 No edition found for <b>{title['name']}</b> on <b>{friendly_date}</b>.",
+                    parse_mode="HTML",
+                )
+            return ConversationHandler.END
+
+        if len(matches) > 1:
+            buttons = [
+                [InlineKeyboardButton(
+                    f"📰 {t['name']}",
+                    callback_data=f"quickget:{t['id']}:{target_date.isoformat()}",
+                )]
+                for t, _score in matches[:3]
+            ]
+            await update.message.reply_text(
+                f"🔍 Multiple matches for <b>{title_query}</b>:\n"
+                "Tap the one you meant:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            return ConversationHandler.END
+
+        # No match
+        await update.message.reply_text(
+            f"❌ No title matching <b>{title_query}</b> found.\n"
+            "Use /get without arguments to browse archives.",
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
     keyboard = [
         [
             InlineKeyboardButton("🇺🇸 English", callback_data="get_lang_english"),
@@ -229,3 +298,35 @@ get_conversation_handler = ConversationHandler(
     },
     fallbacks=[CallbackQueryHandler(get_cancel, pattern="^get_cancel$")],
 )
+
+
+async def handle_quickget_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    parts = query.data.split(":")
+    title_id = int(parts[1])
+    date_str = parts[2]
+    
+    db_path = context.bot_data["config"].db_path
+    all_titles = await get_all_titles(db_path)
+    title = next((t for t in all_titles if t["id"] == title_id), None)
+    title_name = title["name"] if title else f"Title #{title_id}"
+
+    d_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+    edition = await get_edition(db_path, title_id, d_obj)
+    
+    if not edition or not edition.get("file_id"):
+        await query.edit_message_text(
+            f"❌ Sorry, no edition found for <b>{title_name}</b> on {format_date(d_obj)}.",
+            parse_mode="HTML",
+        )
+        return
+
+    friendly_date = format_date(d_obj)
+    await query.edit_message_text(f"✅ Sending <b>{title_name}</b> for {friendly_date}...", parse_mode="HTML")
+    
+    await context.bot.send_document(
+        chat_id=query.message.chat_id,
+        document=edition["file_id"],
+        caption=f"📰 <b>{title_name}</b>  •  {friendly_date}",
+        parse_mode="HTML",
+    )

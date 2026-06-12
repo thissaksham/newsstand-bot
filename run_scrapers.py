@@ -9,7 +9,7 @@ from config import Config
 from database.operations import (
     add_edition, update_edition_status, get_pending_scrapes,
     get_subscribers_for_title, log_delivery, has_been_delivered,
-    upsert_scrape_status, get_failed_scrapes
+    upsert_scrape_status, get_failed_scrapes, _get_client
 )
 from utils.helpers import get_today, format_date
 from datetime import datetime, date, timezone
@@ -48,6 +48,73 @@ async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_
             await log_delivery("", user_id, edition_id, "failed")
             
         await asyncio.sleep(0.1)
+
+async def catch_up_deliveries(bot: Bot, scrape_date: date):
+    """Deliver today's editions to any subscribers who haven't received them yet."""
+    db = await _get_client()
+    
+    # 1. Fetch all active subscriptions
+    subs_resp = await db.table("subscriptions").select("user_id, title_id").execute()
+    if not subs_resp.data:
+        return
+        
+    # 2. Get all editions for today
+    editions_resp = await db.table("editions").select("id, title_id, file_id, titles(name)").eq("date", scrape_date.isoformat()).execute()
+    if not editions_resp.data:
+        return
+        
+    # Map title_id to edition info
+    editions_map = {}
+    for row in editions_resp.data:
+        if row.get("file_id"):
+            editions_map[row["title_id"]] = {
+                "edition_id": row["id"],
+                "file_id": row["file_id"],
+                "title_name": row["titles"]["name"] if row.get("titles") else f"Title #{row['title_id']}"
+            }
+    
+    # 3. Check each subscription
+    for sub in subs_resp.data:
+        user_id = sub["user_id"]
+        title_id = sub["title_id"]
+        
+        if title_id in editions_map:
+            ed = editions_map[title_id]
+            edition_id = ed["edition_id"]
+            file_id = ed["file_id"]
+            title_name = ed["title_name"]
+            
+            # Check if already delivered
+            if not await has_been_delivered("", user_id, edition_id):
+                friendly_date = format_date(scrape_date)
+                print(f"[Catch-up] Delivering {title_name} to {user_id}...")
+                try:
+                    await bot.send_document(
+                        chat_id=user_id,
+                        document=file_id,
+                        caption=f"📰 Here is your **{title_name}** for {friendly_date}!",
+                        parse_mode="Markdown"
+                    )
+                    await log_delivery("", user_id, edition_id, "success")
+                    print(f"[Catch-up] Delivered to {user_id}")
+                except RetryAfter as e:
+                    print(f"[Catch-up] Rate limited! Sleeping for {e.retry_after}s")
+                    await asyncio.sleep(e.retry_after)
+                    try:
+                        await bot.send_document(
+                            chat_id=user_id,
+                            document=file_id,
+                            caption=f"📰 Here is your **{title_name}** for {friendly_date}!",
+                            parse_mode="Markdown"
+                        )
+                        await log_delivery("", user_id, edition_id, "success")
+                    except Exception as ex:
+                        print(f"[Catch-up] Retry failed: {ex}")
+                except Exception as e:
+                    print(f"[Catch-up] Failed to deliver: {e}")
+                    await log_delivery("", user_id, edition_id, "failed")
+                
+                await asyncio.sleep(0.2)
 
 async def main():
     load_dotenv()
@@ -158,6 +225,9 @@ async def main():
         finally:
             if os.path.exists(output_file):
                 os.remove(output_file)
+
+    # 5.5 Catch-up deliveries for any missed subscriptions
+    await catch_up_deliveries(bot, today)
 
     # 6. Send Failure Report on the last run of the day (06:xx UTC -> 11:30 IST)
     if datetime.now(timezone.utc).hour == 6:

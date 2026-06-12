@@ -151,7 +151,7 @@ async def add_edition(
     }
     # upsert matches the UNIQUE(title_id, date) IF we configure Supabase upsert to use that constraint.
     # By default, upsert in PostgREST uses the primary key. To upsert on a unique constraint, we must pass on_conflict.
-    resp = await db.table("editions").upsert(data, on_conflict="title_id, date").execute()
+    resp = await db.table("editions").upsert(data, on_conflict="title_id,date").execute()
     return resp.data[0]["id"]
 
 

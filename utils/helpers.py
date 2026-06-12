@@ -151,11 +151,5 @@ def format_file_size(size_bytes: int | float) -> str:
 from datetime import timedelta
 
 def get_today(timezone: str = "Asia/Kolkata") -> date:
-    """Return today's date in the given timezone.
-    If the current time is before 5 AM, it returns yesterday's date,
-    as newspapers are not uploaded until 5 AM.
-    """
-    now = datetime.now(ZoneInfo(timezone))
-    if now.hour < 5:
-        now -= timedelta(days=1)
-    return now.date()
+    """Return today's date in the given timezone."""
+    return datetime.now(ZoneInfo(timezone)).date()
