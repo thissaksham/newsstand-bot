@@ -31,9 +31,10 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
         soup = BeautifulSoup(html, 'html.parser')
         
         today_date = get_today()
-        target_a = None
+        target_drive_url = None
         newspaper_date = None
         
+        # 1. Search for standard <a> tags with Google Drive links
         for a in soup.find_all('a', href=True):
             if 'drive.google.com/file/d/' in a['href']:
                 parent_text = a.parent.get_text(strip=True).lower()
@@ -46,14 +47,42 @@ async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | No
                 has_year = str(today_date.year) in nums
                 
                 if has_day and (has_month_text or has_month_num) and has_year:
-                    target_a = a
+                    target_drive_url = a['href']
                     newspaper_date = today_date
                     break
-        if not target_a:
+                    
+        # 2. Search for Ninja Tables or raw cells with Google Drive links if not found yet
+        if not target_drive_url:
+            for tr in soup.find_all('tr'):
+                tds = tr.find_all('td')
+                if len(tds) >= 2:
+                    drive_url = None
+                    date_cell_text = ""
+                    for td in tds:
+                        text = td.get_text(strip=True)
+                        if 'drive.google.com/file/d/' in text:
+                            drive_url = text
+                        elif td.find('a', href=True) and 'drive.google.com/file/d/' in td.find('a', href=True).get('href', ''):
+                            drive_url = td.find('a', href=True)['href']
+                        else:
+                            date_cell_text += " " + text.lower()
+                            
+                    if drive_url:
+                        # Run the same flexible date checking on non-link cells in the row
+                        nums = set(re.findall(r'\d+', date_cell_text))
+                        has_day = str(today_date.day) in nums or f"{today_date.day:02d}" in nums
+                        has_month_text = today_date.strftime('%b').lower() in date_cell_text or today_date.strftime('%B').lower() in date_cell_text
+                        has_month_num = str(today_date.month) in nums or f"{today_date.month:02d}" in nums
+                        has_year = str(today_date.year) in nums
+                        
+                        if has_day and (has_month_text or has_month_num) and has_year:
+                            target_drive_url = drive_url
+                            newspaper_date = today_date
+                            break
+        if not target_drive_url:
             print(f"[{name}] Failed: Today's edition ({today_date.strftime('%d %b %Y')}) not found on website yet")
             return None
             
-        target_drive_url = target_a['href']
         match = re.search(r'/d/([a-zA-Z0-9_-]+)', target_drive_url)
         if not match:
             return None
