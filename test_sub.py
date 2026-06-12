@@ -1,8 +1,7 @@
 import asyncio
-import os
 from dotenv import load_dotenv
 load_dotenv()
-from database.operations import get_user_subscriptions, subscribe, _get_client
+from database.operations import get_user_subscriptions, _get_client
 
 async def main():
     db = await _get_client()

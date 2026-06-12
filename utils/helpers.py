@@ -148,7 +148,6 @@ def format_file_size(size_bytes: int | float) -> str:
 
 # ── timezone-aware "today" ──────────────────────────────────────────
 
-from datetime import timedelta
 
 def get_today(timezone: str = "Asia/Kolkata") -> date:
     """Return today's date in the given timezone."""

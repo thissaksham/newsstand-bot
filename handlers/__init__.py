@@ -7,9 +7,6 @@ from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    ConversationHandler,
-    MessageHandler,
-    filters,
 )
 
 from .start import start_handler, help_handler

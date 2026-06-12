@@ -4,7 +4,7 @@ import asyncio
 import urllib.request
 import gdown
 from bs4 import BeautifulSoup
-from datetime import datetime, date
+from datetime import date
 from utils.helpers import get_today
 
 async def scrape(source_url: str, slug: str, name: str) -> tuple[str, date] | None:
