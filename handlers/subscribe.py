@@ -29,7 +29,7 @@ from database.operations import (
     search_titles,
 )
 from utils.helpers import fuzzy_match_title
-from scrapers.downmagaz_net import search_magazines
+from scrapers.downmagaz_net import search_magazines, scrape_magazine_tag, get_download_links
 
 logger = logging.getLogger(__name__)
 
@@ -387,10 +387,34 @@ async def handle_submag_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
     else:
         await subscribe(db_path, user_id, title_id)
+        
+        latest_edition_info = ""
+        try:
+            from urllib.parse import quote
+            tag_url = f"https://downmagaz.net/tags/{quote(title_name.lower())}/"
+            posts = await scrape_magazine_tag(tag_url)
+            if posts:
+                latest_post = posts[0]
+                links = await get_download_links(latest_post["url"])
+                if links:
+                    links_html = ""
+                    for domain, href in links:
+                        links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                    
+                    latest_edition_info = (
+                        f"\n\n🔥 <b>Latest Edition Available:</b>\n"
+                        f"👉 <b>{latest_post['title']}</b>\n\n"
+                        f"Download Links:\n{links_html}"
+                    )
+        except Exception as e:
+            logger.error(f"Error fetching latest edition for {title_name}: {e}")
+            
         await query.edit_message_text(
             f"✅ Subscribed to <b>{title_name}</b>!\n\n"
-            f"Whenever a new edition comes, we'll send you the download links automatically! 📖🚀",
-            parse_mode="HTML"
+            f"Whenever a new edition comes, we'll send you the download links automatically! 📖🚀"
+            f"{latest_edition_info}",
+            parse_mode="HTML",
+            disable_web_page_preview=True
         )
         
     return ConversationHandler.END
