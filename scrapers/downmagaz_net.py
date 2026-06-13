@@ -20,9 +20,28 @@ COUNTRIES = {
     "Singapore", "Philippines", "UK & US", "International"
 }
 
+def clean_version(tag_name: str, title_text: str) -> str:
+    """Extracts the magazine version/edition from the post title."""
+    pattern = re.compile(re.escape(tag_name), re.IGNORECASE)
+    remains = pattern.sub("", title_text).strip()
+    
+    # Strip dates: DD.MM.YYYY, MM.DD.YYYY, DD.MM.YY, etc. (supporting 2-4 digit years)
+    remains = re.sub(r'\d{1,2}[./-]\d{1,2}[./-]\d{2,4}', '', remains)
+    # Strip month words and dates
+    remains = re.sub(r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[ ,.-]*\d{1,2}[ ,.-]*\d{2,4}', '', remains, flags=re.IGNORECASE)
+    remains = re.sub(r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[ ,.-]*\d{2,4}', '', remains, flags=re.IGNORECASE)
+    # Strip stand-alone 2-4 digit numbers (e.g. years)
+    remains = re.sub(r'\b\d{2,4}\b', '', remains)
+    # Strip standalone 1-2 digit numbers (like month/issue numbers)
+    remains = re.sub(r'\b\d{1,2}\b', '', remains)
+    
+    # Clean up hyphens, spaces, dots, and special chars
+    remains = re.sub(r'[\s\-\–\—•.,/]+', ' ', remains).strip()
+    return remains
+
 async def search_magazines(query: str) -> list[tuple[str, str, list[str]]]:
     """Search downmagaz.net for magazines matching query.
-    Returns list of (tag_name, tag_url, countries_list) tuples.
+    Returns list of (tag_name, tag_url, versions_list) tuples.
     """
     search_url = "https://downmagaz.net/index.php?do=search"
     data = {
@@ -43,11 +62,15 @@ async def search_magazines(query: str) -> list[tuple[str, str, list[str]]]:
             
             tags = {}
             for s in stories:
+                title_a = s.find(class_="stitle").find('a') if s.find(class_="stitle") else None
+                if not title_a:
+                    continue
+                title_text = title_a.get_text(strip=True)
+                
                 mlink = s.find(class_="mlink")
                 if mlink:
                     tag_links = [a for a in mlink.find_all('a', href=True) if '/tags/' in a['href']]
                     
-                    story_countries = []
                     story_magazines = []
                     for tl in tag_links:
                         t_name = tl.get_text(strip=True)
@@ -55,18 +78,20 @@ async def search_magazines(query: str) -> list[tuple[str, str, list[str]]]:
                         if t_url.startswith("/"):
                             t_url = "https://downmagaz.net" + t_url
                             
-                        if t_name.lower() in [c.lower() for c in COUNTRIES]:
-                            story_countries.append(t_name)
-                        else:
+                        # Ignore country tags as separate magazines
+                        if t_name.lower() not in [c.lower() for c in COUNTRIES]:
                             story_magazines.append((t_name, t_url))
                             
                     for m_name, m_url in story_magazines:
+                        version = clean_version(m_name, title_text)
+                        
                         if m_name not in tags:
                             tags[m_name] = {
                                 "url": m_url,
-                                "countries": set()
+                                "versions": set()
                             }
-                        tags[m_name]["countries"].update(story_countries)
+                        if version:
+                            tags[m_name]["versions"].add(version)
             
             # Fuzzy match and filter tags
             matched_tags = []
@@ -76,7 +101,7 @@ async def search_magazines(query: str) -> list[tuple[str, str, list[str]]]:
                 token_sort = fuzz.token_sort_ratio(query.lower(), tag_name.lower())
                 
                 if pratio > 70 or token_sort > 60 or ratio > 60:
-                    matched_tags.append((tag_name, info["url"], list(info["countries"]), max(ratio, token_sort)))
+                    matched_tags.append((tag_name, info["url"], sorted(list(info["versions"])), max(ratio, token_sort)))
             
             # Sort by score descending
             matched_tags.sort(key=lambda x: x[3], reverse=True)

@@ -284,19 +284,19 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
     options = []
     seen_names = set()
     
-    # Create a map of lowercased name -> countries from web results
-    web_countries_map = {name.lower(): countries for name, _, countries in web_results}
+    # Create a map of lowercased name -> versions from web results
+    web_versions_map = {name.lower(): versions for name, _, versions in web_results}
     
     for t in db_magazines:
         name = t["name"]
         if name.lower() not in seen_names:
-            countries = web_countries_map.get(name.lower(), [])
-            options.append((name, f"submag:db:{t['id']}", countries))
+            versions = web_versions_map.get(name.lower(), [])
+            options.append((name, f"submag:db:{t['id']}", versions))
             seen_names.add(name.lower())
             
-    for name, tag_url, countries in web_results:
+    for name, tag_url, versions in web_results:
         if name.lower() not in seen_names:
-            options.append((name, f"submag:web:{name}", countries))
+            options.append((name, f"submag:web:{name}", versions))
             seen_names.add(name.lower())
             
     await status_msg.delete()
@@ -312,11 +312,11 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
         )
         return AWAITING_MAGAZINE_NAME
 
-    # Show top 8 options with countries in bracket
+    # Show top 8 options with versions in bracket
     buttons = []
-    for name, cb_data, countries in options[:8]:
-        countries_str = f" ({', '.join(countries[:3])})" if countries else ""
-        display_name = f"{name}{countries_str}"
+    for name, cb_data, versions in options[:8]:
+        versions_str = f" ({', '.join(versions[:5])})" if versions else ""
+        display_name = f"{name}{versions_str}"
         buttons.append([InlineKeyboardButton(f"📖 {display_name}", callback_data=cb_data)])
         
     buttons.append([
