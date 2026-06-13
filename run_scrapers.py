@@ -13,7 +13,7 @@ from database.operations import (
     get_edition, add_title
 )
 from utils.helpers import get_today, format_date
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from urllib.parse import quote
 from scrapers.downmagaz_net import scrape_magazine_tag, get_download_links, get_magazine_tag_and_version, matches_version
 
@@ -302,8 +302,8 @@ async def main():
     
     print(f"Scraping all active titles for today: {today}")
     
-    # 1. Get titles that haven't been successfully scraped today (max 6 attempts)
-    pending_titles = await get_pending_scrapes("", scrape_date=today, max_attempts=6)
+    # 1. Get titles that haven't been successfully scraped today (max 7 attempts)
+    pending_titles = await get_pending_scrapes("", scrape_date=today, max_attempts=7)
     
     if not pending_titles:
         print("All active titles have already been scraped for today! Exiting.")
@@ -311,8 +311,34 @@ async def main():
         
     print(f"Found {len(pending_titles)} titles pending scrape.")
     
-    # 2. Iterate and scrape using the dynamic source module
+    # Filter titles based on category and current hour in IST (UTC+5:30)
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    current_hour = ist_now.hour
+    
+    filtered_titles = []
     for title in pending_titles:
+        category = title.get("category", "Newspaper")
+        if category == "Newspaper":
+            if 6 <= current_hour <= 12:
+                filtered_titles.append(title)
+            else:
+                print(f"[{title['name']}] Skipped: Newspaper checks only run between 6am and 12pm IST (current hour: {current_hour} IST).")
+        elif category == "Magazine":
+            if current_hour in (0, 6, 12, 18):
+                filtered_titles.append(title)
+            else:
+                print(f"[{title['name']}] Skipped: Magazine checks only run at 12am, 6am, 12pm, 6pm IST (current hour: {current_hour} IST).")
+        else:
+            filtered_titles.append(title)
+            
+    if not filtered_titles:
+        print(f"No titles to scrape for the current hour ({current_hour} IST). Exiting.")
+        return
+        
+    print(f"Found {len(filtered_titles)} titles to scrape in this run.")
+    
+    # 2. Iterate and scrape using the dynamic source module
+    for title in filtered_titles:
         name = title["name"]
         slug = title["slug"]
         
@@ -440,11 +466,12 @@ async def main():
     # 5.5 Catch-up deliveries for any missed subscriptions
     await catch_up_deliveries(bot, today)
 
-    # 6. Send Failure Report on the last run of the day (06:xx UTC -> 11:30 IST)
-    if datetime.now(timezone.utc).hour == 6:
+    # 6. Send Failure Report at 12pm IST (noon)
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    if ist_now.hour == 12:
         failed_titles = await get_failed_scrapes("", today)
         if failed_titles:
-            report = "⚠️ *Daily Scrape Failure Report*\n\nThe following newspapers could not be found today after 6 attempts:\n"
+            report = "⚠️ *Daily Scrape Failure Report*\n\nThe following newspapers could not be found today after 7 attempts:\n"
             for t in failed_titles:
                 report += f"• {t}\n"
             try:
