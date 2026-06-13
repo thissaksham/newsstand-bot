@@ -5,7 +5,7 @@ A full-featured Telegram bot for automated newspaper and magazine delivery. Subs
 ## Features
 
 - 📋 **50+ Indian newspapers** across 12 languages
-- 📦 **Curated packs** — subscribe to bundles in one click
+
 - ⏰ **Auto-delivery** — papers delivered every morning
 - 🔄 **Smart retries** — keeps checking until papers are available
 - 📚 **Archive** — request any past edition on demand
@@ -98,7 +98,7 @@ python -m scrapers.template_scraper
 | `/sub <title>` | Quick subscribe (fuzzy matched) |
 | `/unsub <title>` | Quick unsubscribe |
 | `/subscriptions` | View your active subscriptions |
-| `/packs` | Browse curated title bundles |
+
 | `/today` | Get all of today's available papers |
 | `/get <title>` | Get today's edition of a specific title |
 | `/get <title> DD-MM-YYYY` | Get a past edition from archive |
@@ -119,7 +119,7 @@ python -m scrapers.template_scraper
 All configuration lives in `config.yaml`. Edit this file to:
 
 - **Add/remove titles** — add entries under `titles:`
-- **Create packs** — add entries under `packs:`
+
 - **Change schedule** — edit `schedule:` section
 - **Manage languages** — titles are auto-grouped by their `language` field
 

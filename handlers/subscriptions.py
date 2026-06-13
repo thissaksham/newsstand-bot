@@ -44,7 +44,7 @@ async def subscriptions_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if not subs:
         await update.message.reply_text(
             "📭 <b>No subscriptions yet.</b>\n\n"
-            "Use /subscribe to browse titles or /packs to grab a curated bundle! 🚀",
+            "Use /subscribe to browse and subscribe to available titles! 🚀",
             parse_mode="HTML",
         )
         return

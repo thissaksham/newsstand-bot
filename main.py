@@ -14,7 +14,7 @@ from telegram import BotCommand, Update
 from telegram.ext import Application, ApplicationBuilder, ContextTypes
 
 from config import Config
-from database.operations import sync_titles_from_config, sync_packs_from_config
+from database.operations import sync_titles_from_config
 from handlers import register_handlers
 import os
 import httpx
@@ -71,8 +71,7 @@ async def post_init(application: Application) -> None:
     logger.info("Syncing titles from config...")
     await sync_titles_from_config(config.db_path, config.titles)
     
-    logger.info("Syncing packs from config...")
-    await sync_packs_from_config(config.db_path, config.packs)
+
     
     # 5. Register bot commands in Telegram
     logger.info("Setting bot commands...")

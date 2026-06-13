@@ -36,13 +36,7 @@ class TitleConfig:
     scrape_website: str = ""
 
 
-@dataclass(frozen=True)
-class PackConfig:
-    """A curated subscription pack."""
 
-    name: str
-    description: str
-    title_slugs: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -138,15 +132,7 @@ class Config:
             for t in raw.get("titles", [])
         ]
 
-        # ── packs ───────────────────────────────────────────────────
-        self._packs: list[PackConfig] = [
-            PackConfig(
-                name=p["name"],
-                description=p.get("description", ""),
-                title_slugs=p.get("titles", []),
-            )
-            for p in raw.get("packs", [])
-        ]
+
 
     # ── singleton accessor ──────────────────────────────────────────
 
@@ -196,9 +182,7 @@ class Config:
     def titles(self) -> list[TitleConfig]:
         return list(self._titles)
 
-    @property
-    def packs(self) -> list[PackConfig]:
-        return list(self._packs)
+
 
     # ── convenience look-ups ────────────────────────────────────────
 
@@ -214,9 +198,4 @@ class Config:
         lang = language.lower()
         return [t for t in self._titles if t.language.lower() == lang]
 
-    def get_pack(self, name: str) -> PackConfig | None:
-        """Look up a pack by exact name."""
-        for p in self._packs:
-            if p.name == name:
-                return p
-        return None
+

@@ -231,41 +231,6 @@ async def get_subscribers_for_title(db_path: str, title_id: int) -> list[int]:
     return [row["user_id"] for row in resp.data]
 
 
-# =====================================================================
-# Packs
-# =====================================================================
-
-async def add_pack(db_path: str, name: str, description: Optional[str] = None) -> int:
-    db = await _get_client()
-    resp = await db.table("packs").insert({"name": name, "description": description}).execute()
-    return resp.data[0]["id"]
-
-
-async def add_title_to_pack(db_path: str, pack_id: int, title_id: int) -> None:
-    db = await _get_client()
-    try:
-        await db.table("pack_titles").insert({"pack_id": pack_id, "title_id": title_id}).execute()
-    except Exception:
-        pass
-
-
-async def subscribe_to_pack(db_path: str, user_id: int, pack_id: int) -> int:
-    """Subscribe user to all titles in a pack. Returns number of new subs."""
-    db = await _get_client()
-    resp = await db.table("pack_titles").select("title_id").eq("pack_id", pack_id).execute()
-    title_ids = [row["title_id"] for row in resp.data]
-    
-    new_subs = 0
-    for tid in title_ids:
-        if await subscribe(db_path, user_id, tid):
-            new_subs += 1
-    return new_subs
-
-
-async def get_packs(db_path: str) -> list[dict[str, Any]]:
-    db = await _get_client()
-    resp = await db.table("packs").select("*").order("name").execute()
-    return resp.data
 
 
 # =====================================================================
@@ -385,46 +350,6 @@ async def sync_titles_from_config(db_path: str, titles: list) -> None:
         if row['slug'] not in config_slugs and row['is_active'] == 1:
             await db.table('titles').update({'is_active': 0}).eq('id', row['id']).execute()
 
-async def sync_packs_from_config(db_path: str, packs: list) -> None:
-    db = await _get_client()
-    
-    # 1. Map title slug to title id
-    titles_resp = await db.table("titles").select("id, slug").execute()
-    title_slug_map = {row["slug"]: row["id"] for row in titles_resp.data}
-    
-    config_pack_names = []
-    for p in packs:
-        name = getattr(p, "name", "")
-        description = getattr(p, "description", "")
-        title_slugs = getattr(p, "title_slugs", [])
-        
-        config_pack_names.append(name)
-        
-        # Upsert pack
-        pack_data = {
-            "name": name,
-            "description": description,
-        }
-        pack_resp = await db.table("packs").upsert(pack_data, on_conflict="name").execute()
-        if not pack_resp.data:
-            continue
-            
-        pack_id = pack_resp.data[0]["id"]
-        
-        # Get resolved title IDs
-        title_ids = [title_slug_map[slug] for slug in title_slugs if slug in title_slug_map]
-        
-        # Clear existing pack titles and insert new ones
-        await db.table("pack_titles").delete().eq("pack_id", pack_id).execute()
-        if title_ids:
-            pt_data = [{"pack_id": pack_id, "title_id": tid} for tid in title_ids]
-            await db.table("pack_titles").insert(pt_data).execute()
-            
-    # 2. Delete packs no longer in config
-    db_packs = await db.table("packs").select("id, name").execute()
-    for row in db_packs.data:
-        if row["name"] not in config_pack_names:
-            await db.table("packs").delete().eq("id", row["id"]).execute()
 
 
 
@@ -449,10 +374,6 @@ async def is_subscribed(db_path: str, user_id: int, title_id: int) -> bool:
 
 
 
-async def get_pack_titles(db_path: str, pack_id: int) -> list[dict]:
-    db = await _get_client()
-    resp = await db.table('pack_titles').select('titles(*)').eq('pack_id', pack_id).execute()
-    return [row['titles'] for row in resp.data if row.get('titles')]
 
 
 
