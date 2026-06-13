@@ -14,9 +14,15 @@ headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 }
 
-async def search_magazines(query: str) -> list[tuple[str, str]]:
+COUNTRIES = {
+    "USA", "UK", "Europe", "Asia", "Middle East", "South Africa", "Australia", 
+    "Canada", "New Zealand", "India", "Germany", "France", "Italy", "Spain", 
+    "Singapore", "Philippines", "UK & US", "International"
+}
+
+async def search_magazines(query: str) -> list[tuple[str, str, list[str]]]:
     """Search downmagaz.net for magazines matching query.
-    Returns list of (tag_name, tag_url) tuples.
+    Returns list of (tag_name, tag_url, countries_list) tuples.
     """
     search_url = "https://downmagaz.net/index.php?do=search"
     data = {
@@ -40,27 +46,41 @@ async def search_magazines(query: str) -> list[tuple[str, str]]:
                 mlink = s.find(class_="mlink")
                 if mlink:
                     tag_links = [a for a in mlink.find_all('a', href=True) if '/tags/' in a['href']]
+                    
+                    story_countries = []
+                    story_magazines = []
                     for tl in tag_links:
-                        tag_name = tl.get_text(strip=True)
-                        href = tl['href']
-                        if href.startswith("/"):
-                            href = "https://downmagaz.net" + href
-                        tags[tag_name] = href
+                        t_name = tl.get_text(strip=True)
+                        t_url = tl['href']
+                        if t_url.startswith("/"):
+                            t_url = "https://downmagaz.net" + t_url
+                            
+                        if t_name.lower() in [c.lower() for c in COUNTRIES]:
+                            story_countries.append(t_name)
+                        else:
+                            story_magazines.append((t_name, t_url))
+                            
+                    for m_name, m_url in story_magazines:
+                        if m_name not in tags:
+                            tags[m_name] = {
+                                "url": m_url,
+                                "countries": set()
+                            }
+                        tags[m_name]["countries"].update(story_countries)
             
             # Fuzzy match and filter tags
             matched_tags = []
-            for tag_name, tag_url in tags.items():
+            for tag_name, info in tags.items():
                 ratio = fuzz.ratio(query.lower(), tag_name.lower())
                 pratio = fuzz.partial_ratio(query.lower(), tag_name.lower())
                 token_sort = fuzz.token_sort_ratio(query.lower(), tag_name.lower())
                 
-                # Keep matches that have reasonable similarity
                 if pratio > 70 or token_sort > 60 or ratio > 60:
-                    matched_tags.append((tag_name, tag_url, max(ratio, token_sort)))
+                    matched_tags.append((tag_name, info["url"], list(info["countries"]), max(ratio, token_sort)))
             
             # Sort by score descending
-            matched_tags.sort(key=lambda x: x[2], reverse=True)
-            return [(t[0], t[1]) for t in matched_tags]
+            matched_tags.sort(key=lambda x: x[3], reverse=True)
+            return [(t[0], t[1], t[2]) for t in matched_tags]
             
     except Exception:
         return []

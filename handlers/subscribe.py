@@ -271,28 +271,32 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
     query_text = update.message.text.strip()
     db_path = context.bot_data["config"].db_path
     
-    status_msg = await update.message.reply_text("🔍 Searching downmagaz.net... ⏳")
+    status_msg = await update.message.reply_text("🔍 Searching for matching magazines... ⏳")
     
     # 1. Search titles table in DB for matching magazines
     db_results = await search_titles(db_path, query_text)
     db_magazines = [t for t in db_results if t.get("category") == "Magazine"]
     
-    # 2. Search downmagaz.net tags
+    # 2. Search tags via scraper
     web_results = await search_magazines(query_text)
     
     # Merge options, prioritizing DB matches, keeping unique by name
     options = []
     seen_names = set()
     
+    # Create a map of lowercased name -> countries from web results
+    web_countries_map = {name.lower(): countries for name, _, countries in web_results}
+    
     for t in db_magazines:
         name = t["name"]
         if name.lower() not in seen_names:
-            options.append((name, f"submag:db:{t['id']}"))
+            countries = web_countries_map.get(name.lower(), [])
+            options.append((name, f"submag:db:{t['id']}", countries))
             seen_names.add(name.lower())
             
-    for name, tag_url in web_results:
+    for name, tag_url, countries in web_results:
         if name.lower() not in seen_names:
-            options.append((name, f"submag:web:{name}"))
+            options.append((name, f"submag:web:{name}", countries))
             seen_names.add(name.lower())
             
     await status_msg.delete()
@@ -308,10 +312,12 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
         )
         return AWAITING_MAGAZINE_NAME
 
-    # Show top 8 options
+    # Show top 8 options with countries in bracket
     buttons = []
-    for name, cb_data in options[:8]:
-        buttons.append([InlineKeyboardButton(f"📖 {name}", callback_data=cb_data)])
+    for name, cb_data, countries in options[:8]:
+        countries_str = f" ({', '.join(countries[:3])})" if countries else ""
+        display_name = f"{name}{countries_str}"
+        buttons.append([InlineKeyboardButton(f"📖 {display_name}", callback_data=cb_data)])
         
     buttons.append([
         InlineKeyboardButton("🔙 Back to Categories", callback_data="lang:__back__")
@@ -383,7 +389,7 @@ async def handle_submag_callback(update: Update, context: ContextTypes.DEFAULT_T
         await subscribe(db_path, user_id, title_id)
         await query.edit_message_text(
             f"✅ Subscribed to <b>{title_name}</b>!\n\n"
-            f"Whenever a new edition comes on downmagaz.net, we'll send you the download links automatically! 📖🚀",
+            f"Whenever a new edition comes, we'll send you the download links automatically! 📖🚀",
             parse_mode="HTML"
         )
         
