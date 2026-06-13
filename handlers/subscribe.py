@@ -1,11 +1,20 @@
 """
 Newsstand Bot — /subscribe, /sub, /unsub handlers
-Interactive language → title browser with inline keyboards.
+Interactive category → title browser with inline keyboards.
+Supports newspaper languages and downmagaz.net magazine searches.
 """
 
 import logging
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
+from telegram.ext import (
+    ContextTypes,
+    ConversationHandler,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+)
 
 from database.operations import (
     get_titles_by_language,
@@ -15,8 +24,12 @@ from database.operations import (
     is_subscribed,
     get_user_subscriptions,
     register_user,
+    get_title_by_slug,
+    add_title,
+    search_titles,
 )
 from utils.helpers import fuzzy_match_title
+from scrapers.downmagaz_net import search_magazines
 
 logger = logging.getLogger(__name__)
 
@@ -37,95 +50,100 @@ LANG_FLAGS: dict[str, str] = {
     "urdu":       "🇵🇰",
 }
 
+# ── Conversation States ──────────────────────────────────────────────────────
+SELECT_CATEGORY, AWAITING_MAGAZINE_NAME = range(2)
 
 def _flag(language: str) -> str:
     return LANG_FLAGS.get(language.lower(), "🌐")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  /subscribe — Interactive browser
+#  /subscribe — Interactive category picker
 # ═════════════════════════════════════════════════════════════════════════════
 
-async def subscribe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show language picker as inline keyboard."""
+async def subscribe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show category/language picker as inline keyboard."""
     db_path = context.bot_data["config"].db_path
     all_titles = await get_all_titles(db_path)
 
-    # Collect unique languages preserving insertion order
-    languages: list[str] = list(dict.fromkeys(t["language"] for t in all_titles))
+    # Collect unique languages for newspapers only
+    languages: list[str] = list(dict.fromkeys(
+        t["language"] for t in all_titles 
+        if t.get("category", "Newspaper") == "Newspaper"
+    ))
 
-    if not languages:
-        await update.message.reply_text(
-            "📭 No titles are configured yet. Check back later!",
-            parse_mode="HTML",
-        )
-        return
-
-    buttons = [
-        [InlineKeyboardButton(
-            f"{_flag(lang)} {lang.title()}",
+    buttons = []
+    # 1. Newspaper languages
+    for lang in languages:
+        buttons.append([InlineKeyboardButton(
+            f"{_flag(lang)} {lang.title()} Dailies",
             callback_data=f"lang:{lang}",
-        )]
-        for lang in languages
-    ]
+        )])
+        
+    # 2. Magazines category
+    buttons.append([InlineKeyboardButton(
+        "📖 Magazines",
+        callback_data="cat:magazine",
+    )])
 
     await update.message.reply_text(
-        "📰 <b>Subscribe — Choose a Language</b>\n"
+        "📰 <b>Subscribe — Choose a Category</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Pick a language to browse available titles:",
+        "Pick a category or language to browse available titles:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
+    return SELECT_CATEGORY
 
 
 # ── Callback: show titles for a language ─────────────────────────────────────
 
-async def handle_lang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_lang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     language = query.data.split(":", 1)[1]
 
     if language == "__back__":
-        # Re-show the language picker
+        # Re-show the main category picker
         db_path = context.bot_data["config"].db_path
         all_titles = await get_all_titles(db_path)
-        languages: list[str] = list(dict.fromkeys(t["language"] for t in all_titles))
+        languages: list[str] = list(dict.fromkeys(
+            t["language"] for t in all_titles 
+            if t.get("category", "Newspaper") == "Newspaper"
+        ))
 
-        if not languages:
-            await query.edit_message_text(
-                "📭 No titles are configured yet. Check back later!",
-                parse_mode="HTML",
-            )
-            return
-
-        buttons = [
-            [InlineKeyboardButton(
-                f"{_flag(lang)} {lang.title()}",
+        buttons = []
+        for lang in languages:
+            buttons.append([InlineKeyboardButton(
+                f"{_flag(lang)} {lang.title()} Dailies",
                 callback_data=f"lang:{lang}",
-            )]
-            for lang in languages
-        ]
+            )])
+        buttons.append([InlineKeyboardButton(
+            "📖 Magazines",
+            callback_data="cat:magazine",
+        )])
 
         await query.edit_message_text(
-            "📰 <b>Subscribe — Choose a Language</b>\n"
+            "📰 <b>Subscribe — Choose a Category</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Pick a language to browse available titles:",
+            "Pick a category or language to browse available titles:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
-        return
+        return SELECT_CATEGORY
 
     db_path = context.bot_data["config"].db_path
     await _show_titles_page(query, update.effective_user.id, language, page=0, db_path=db_path)
+    return SELECT_CATEGORY
 
 
-async def handle_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    # callback_data format:  page:lang:{language}:{page_num}
     parts = query.data.split(":")
     language = parts[2]
     page = int(parts[3])
     db_path = context.bot_data["config"].db_path
     await _show_titles_page(query, update.effective_user.id, language, page, db_path=db_path)
+    return SELECT_CATEGORY
 
 
 async def _show_titles_page(query, user_id: int, language: str, page: int, db_path: str) -> None:
@@ -170,7 +188,7 @@ async def _show_titles_page(query, user_id: int, language: str, page: int, db_pa
 
     # Back + Done row
     buttons.append([
-        InlineKeyboardButton("🔙 Languages", callback_data="lang:__back__"),
+        InlineKeyboardButton("🔙 Categories", callback_data="lang:__back__"),
         InlineKeyboardButton("✅ Done", callback_data="done"),
     ])
 
@@ -190,17 +208,16 @@ async def _show_titles_page(query, user_id: int, language: str, page: int, db_pa
 
 # ── Callback: toggle subscription ───────────────────────────────────────────
 
-async def handle_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     user_id = update.effective_user.id
     db_path = context.bot_data["config"].db_path
-    # toggle:{title_id}:{language}:{page}
     parts = query.data.split(":")
     title_id = int(parts[1])
     language = parts[2]
     page = int(parts[3])
 
-    # Ensure user is registered before attempting to subscribe
+    # Ensure user is registered
     user = update.effective_user
     await register_user(
         db_path=db_path,
@@ -214,20 +231,192 @@ async def handle_toggle_callback(update: Update, context: ContextTypes.DEFAULT_T
     else:
         await subscribe(db_path, user_id, title_id)
 
-    # Re-render the page to reflect the new state
     await _show_titles_page(query, user_id, language, page, db_path=db_path)
+    return SELECT_CATEGORY
 
 
 # ── Callback: done ──────────────────────────────────────────────────────────
 
-async def handle_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query:
+        await query.edit_message_text(
+            "✅ <b>Subscription updated!</b>\n\n"
+            "Use /subscriptions to review your picks.\n"
+            "Your papers will be delivered automatically each morning. ☀️📰",
+            parse_mode="HTML",
+        )
+    return ConversationHandler.END
+
+
+# ── Callback: Magazines category selected ────────────────────────────────────
+
+async def handle_cat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.edit_message_text(
-        "✅ <b>Subscription updated!</b>\n\n"
-        "Use /subscriptions to review your picks.\n"
-        "Your papers will be delivered automatically each morning. ☀️📰",
+        "📖 <b>Subscribe to a Magazine</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Please type the name of the magazine you want to search for (e.g. <i>The Economist</i>):",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 Back", callback_data="lang:__back__")
+        ]])
     )
+    return AWAITING_MAGAZINE_NAME
+
+
+# ── Message: Text search query received ──────────────────────────────────────
+
+async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query_text = update.message.text.strip()
+    db_path = context.bot_data["config"].db_path
+    
+    status_msg = await update.message.reply_text("🔍 Searching downmagaz.net... ⏳")
+    
+    # 1. Search titles table in DB for matching magazines
+    db_results = await search_titles(db_path, query_text)
+    db_magazines = [t for t in db_results if t.get("category") == "Magazine"]
+    
+    # 2. Search downmagaz.net tags
+    web_results = await search_magazines(query_text)
+    
+    # Merge options, prioritizing DB matches, keeping unique by name
+    options = []
+    seen_names = set()
+    
+    for t in db_magazines:
+        name = t["name"]
+        if name.lower() not in seen_names:
+            options.append((name, f"submag:db:{t['id']}"))
+            seen_names.add(name.lower())
+            
+    for name, tag_url in web_results:
+        if name.lower() not in seen_names:
+            options.append((name, f"submag:web:{name}"))
+            seen_names.add(name.lower())
+            
+    await status_msg.delete()
+    
+    if not options:
+        await update.message.reply_text(
+            f"❌ No matching magazines found for <b>{query_text}</b>.\n"
+            "Please check the spelling and try again:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Back to Categories", callback_data="lang:__back__")
+            ]])
+        )
+        return AWAITING_MAGAZINE_NAME
+
+    # Show top 8 options
+    buttons = []
+    for name, cb_data in options[:8]:
+        buttons.append([InlineKeyboardButton(f"📖 {name}", callback_data=cb_data)])
+        
+    buttons.append([
+        InlineKeyboardButton("🔙 Back to Categories", callback_data="lang:__back__")
+    ])
+    
+    await update.message.reply_text(
+        f"🔍 <b>Search Results for '{query_text}'</b>:\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Select the magazine you want to subscribe to:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return AWAITING_MAGAZINE_NAME
+
+
+# ── Callback: Select a magazine from search results ──────────────────────────
+
+async def handle_submag_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    parts = query.data.split(":", 2)
+    source_type = parts[1]
+    db_path = context.bot_data["config"].db_path
+    user_id = update.effective_user.id
+    
+    # Ensure user is registered
+    user = update.effective_user
+    await register_user(
+        db_path=db_path,
+        user_id=user.id,
+        username=user.username or "",
+        first_name=user.first_name or "",
+    )
+
+    if source_type == "db":
+        title_id = int(parts[2])
+        all_titles = await get_all_titles(db_path, active_only=False)
+        title = next((t for t in all_titles if t["id"] == title_id), None)
+        title_name = title["name"] if title else "Magazine"
+    else:
+        title_name = parts[2]
+        # Generate safe slug
+        cleaned = title_name.lower()
+        cleaned = re.sub(r'[^a-z0-9\s-]', '', cleaned)
+        slug = re.sub(r'[\s-]+', '-', cleaned).strip('-')
+        slug = f"mag-{slug}"
+        
+        # Check if slug exists in DB
+        title = await get_title_by_slug(db_path, slug)
+        if title:
+            title_id = title["id"]
+        else:
+            title_id = await add_title(
+                db_path=db_path,
+                name=title_name,
+                slug=slug,
+                language="English",
+                category="Magazine",
+                source="downmagaz_net"
+            )
+            
+    # Subscribe user
+    already = await is_subscribed(db_path, user_id, title_id)
+    if already:
+        await query.edit_message_text(
+            f"ℹ️ You're already subscribed to <b>{title_name}</b>.",
+            parse_mode="HTML"
+        )
+    else:
+        await subscribe(db_path, user_id, title_id)
+        await query.edit_message_text(
+            f"✅ Subscribed to <b>{title_name}</b>!\n\n"
+            f"Whenever a new edition comes on downmagaz.net, we'll send you the download links automatically! 📖🚀",
+            parse_mode="HTML"
+        )
+        
+    return ConversationHandler.END
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Conversation Handler Definition
+# ═════════════════════════════════════════════════════════════════════════════
+
+subscribe_conversation_handler = ConversationHandler(
+    entry_points=[
+        CommandHandler("subscribe", subscribe_handler),
+    ],
+    states={
+        SELECT_CATEGORY: [
+            CallbackQueryHandler(handle_lang_callback, pattern="^lang:"),
+            CallbackQueryHandler(handle_cat_callback, pattern="^cat:"),
+            CallbackQueryHandler(handle_toggle_callback, pattern="^toggle:"),
+            CallbackQueryHandler(handle_page_callback, pattern="^page:"),
+            CallbackQueryHandler(handle_done_callback, pattern="^done$"),
+        ],
+        AWAITING_MAGAZINE_NAME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_magazine_search),
+            CallbackQueryHandler(handle_lang_callback, pattern="^lang:"),
+            CallbackQueryHandler(handle_submag_callback, pattern="^submag:"),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", handle_done_callback),
+        CallbackQueryHandler(handle_done_callback, pattern="^done$"),
+    ],
+)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -257,10 +446,8 @@ async def sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     
     all_titles = await get_all_titles(db_path)
-
     matches = fuzzy_match_title(query_text, all_titles)
 
-    # Exact / single best match
     if len(matches) == 1:
         title, score = matches[0]
         already = await is_subscribed(db_path, user_id, title["id"])
@@ -273,12 +460,11 @@ async def sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await subscribe(db_path, user_id, title["id"])
         await update.message.reply_text(
             f"✅ Subscribed to <b>{title['name']}</b>!\n"
-            "📬 You'll receive it automatically each morning.",
+            "📬 You'll receive it automatically.",
             parse_mode="HTML",
         )
         return
 
-    # Multiple possible matches
     if len(matches) > 1:
         buttons = [
             [InlineKeyboardButton(
@@ -295,10 +481,9 @@ async def sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # No match
     await update.message.reply_text(
         f"❌ No title matching <b>{query_text}</b> found.\n"
-        "Use /subscribe to browse all available titles.",
+        "Use /subscribe to browse categories and search magazines.",
         parse_mode="HTML",
     )
 
@@ -330,7 +515,6 @@ async def unsub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     
     all_titles = await get_all_titles(db_path)
-
     matches = fuzzy_match_title(query_text, all_titles)
 
     if len(matches) == 1:
@@ -394,7 +578,7 @@ async def handle_quicksub_callback(update: Update, context: ContextTypes.DEFAULT
     await subscribe(db_path, user_id, title_id)
     await query.edit_message_text(
         f"✅ Subscribed to <b>{title_name}</b>!\n"
-        "📬 You'll receive it automatically each morning.",
+        "📬 You'll receive it automatically.",
         parse_mode="HTML",
     )
 
@@ -424,4 +608,3 @@ async def handle_quickunsub_callback(update: Update, context: ContextTypes.DEFAU
         "You won't receive this title anymore.",
         parse_mode="HTML",
     )
-

@@ -10,10 +10,12 @@ from database.operations import (
     add_edition, update_edition_status, get_pending_scrapes,
     get_subscribers_for_title, log_delivery, has_been_delivered,
     upsert_scrape_status, get_failed_scrapes, _get_client,
-    get_edition
+    get_edition, add_title
 )
 from utils.helpers import get_today, format_date
 from datetime import datetime, date, timezone
+from urllib.parse import quote
+from scrapers.downmagaz_net import scrape_magazine_tag, get_download_links
 
 def split_pdf_if_large(filepath: str, max_size_mb: float = 45.0) -> list[str]:
     """Splits a PDF file into multiple files if its size exceeds max_size_mb.
@@ -62,6 +64,107 @@ def split_pdf_if_large(filepath: str, max_size_mb: float = 45.0) -> list[str]:
     except Exception as e:
         print(f"Error splitting PDF: {e}")
         return [filepath]
+
+async def process_magazine_title(bot: Bot, title: dict, today: date):
+    """Scrapes recent editions from downmagaz.net tag, extracts links,
+    and sends updates to subscribers if not already processed.
+    """
+    name = title["name"]
+    title_id = title["id"]
+    
+    tag_name = name.lower()
+    tag_url = f"https://downmagaz.net/tags/{quote(tag_name)}/"
+    
+    print(f"[{name}] Scraping tag page {tag_url}...")
+    posts = await scrape_magazine_tag(tag_url)
+    
+    if not posts:
+        print(f"[{name}] No posts found on tag page.")
+        await upsert_scrape_status("", title_id, today, status="failed", increment_attempts=True)
+        return
+        
+    print(f"[{name}] Found {len(posts)} posts on tag page.")
+    
+    success_any = False
+    
+    for post in posts:
+        post_title = post["title"]
+        post_url = post["url"]
+        edition_date = post["date"]
+        
+        edition = await get_edition("", title_id, edition_date)
+        
+        processed_urls = []
+        if edition and edition.get("file_id"):
+            processed_urls = edition["file_id"].split(",")
+            
+        if post_url in processed_urls:
+            continue
+            
+        print(f"[{name}] Found new post: {post_title} for edition date {edition_date}")
+        
+        links = await get_download_links(post_url)
+        if not links:
+            print(f"[{name}] No download links found for {post_title}. Skipping.")
+            continue
+            
+        subscribers = await get_subscribers_for_title("", title_id)
+        if subscribers:
+            links_html = ""
+            for domain, href in links:
+                links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                
+            msg_text = (
+                f"📖 <b>New Magazine Alert!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"New edition of <b>{name}</b> is available:\n"
+                f"👉 <b>{post_title}</b>\n\n"
+                f"Download Links:\n{links_html}"
+            )
+            
+            for user_id in subscribers:
+                try:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=msg_text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True
+                    )
+                    print(f"[{name}] Delivered to {user_id}")
+                except Exception as e:
+                    print(f"[{name}] Failed to deliver to {user_id}: {e}")
+                    
+        # Update DB: mark this post_url as processed in edition
+        if not edition:
+            new_edition_id = await add_edition(
+                db_path="",
+                title_id=title_id,
+                edition_date=edition_date,
+                download_url=post_url,
+                status="pending"
+            )
+            await update_edition_status(
+                db_path="",
+                edition_id=new_edition_id,
+                status="delivered",
+                file_id=post_url
+            )
+        else:
+            new_file_id = f"{edition.get('file_id') or ''},{post_url}".strip(",")
+            await update_edition_status(
+                db_path="",
+                edition_id=edition["id"],
+                status="delivered",
+                file_id=new_file_id
+            )
+            
+        success_any = True
+        
+    if success_any:
+        await upsert_scrape_status("", title_id, today, status="found", increment_attempts=True)
+    else:
+        # tag page parsed successfully but no new posts found
+        await upsert_scrape_status("", title_id, today, status="found", increment_attempts=True)
 
 async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, newspaper_date: date):
     """Deliver the edition to all subscribed users."""
@@ -207,6 +310,14 @@ async def main():
     for title in pending_titles:
         name = title["name"]
         slug = title["slug"]
+        
+        category = title.get("category", "Newspaper")
+        if category == "Magazine":
+            try:
+                await process_magazine_title(bot, title, today)
+            except Exception as e:
+                print(f"[{name}] Error processing magazine: {e}")
+            continue
         
         # Check if already scraped and uploaded today to prevent duplicate channel uploads
         existing_edition = await get_edition("", title["id"], today)
