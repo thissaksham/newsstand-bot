@@ -17,6 +17,7 @@ from config import Config
 from database.operations import sync_titles_from_config, sync_packs_from_config
 from handlers import register_handlers
 import os
+import httpx
 
 # ─── Logging ───────────────────────────────────────────────────────────────
 
@@ -47,6 +48,19 @@ BOT_COMMANDS = [
 ]
 
 
+async def keep_alive_ping(url: str):
+    """Periodically pings the webhook URL to prevent Render free-tier from sleeping."""
+    await asyncio.sleep(60)  # Wait 1 minute to allow server to fully boot
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+        while True:
+            try:
+                response = await client.get(url)
+                logger.info(f"Keep-alive ping to {url} returned status {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Keep-alive ping to {url} failed: {e}")
+            await asyncio.sleep(600)  # Ping every 10 minutes
+
+
 # ─── Lifecycle Hooks ──────────────────────────────────────────────────────
 
 async def post_init(application: Application) -> None:
@@ -67,6 +81,12 @@ async def post_init(application: Application) -> None:
     # 6. Store config in bot_data for handlers to access
     application.bot_data["config"] = config
     
+    # 7. Start self-ping keep-alive if WEBHOOK_URL is configured
+    webhook_url = os.environ.get("WEBHOOK_URL")
+    if webhook_url:
+        logger.info(f"Starting keep-alive self-ping for {webhook_url}")
+        asyncio.create_task(keep_alive_ping(webhook_url))
+        
     logger.info("Bot initialized successfully!")
 
 
