@@ -292,6 +292,9 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
     merged_results = []
     seen_slugs = set()
     
+    # Create a map of slug -> countries from web results
+    web_countries_map = {e["slug"]: e["countries"] for e in web_results}
+    
     # 1. Add DB magazines
     for t in db_magazines:
         slug = t["slug"]
@@ -301,6 +304,7 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
                 "title_id": t["id"],
                 "edition_name": t["name"],
                 "slug": slug,
+                "countries": web_countries_map.get(slug, [])
             })
             seen_slugs.add(slug)
             
@@ -314,7 +318,8 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
                 "tag_name": e["tag_name"],
                 "tag_url": e["tag_url"],
                 "slug": e["slug"],
-                "version": e["version"]
+                "version": e["version"],
+                "countries": e["countries"]
             })
             seen_slugs.add(slug)
             
@@ -338,6 +343,9 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
     buttons = []
     for idx, item in enumerate(merged_results[:8]):
         display_name = item["edition_name"]
+        countries = item.get("countries", [])
+        if countries:
+            display_name = f"{display_name} ({', '.join(countries)})"
         buttons.append([InlineKeyboardButton(f"📖 {display_name}", callback_data=f"submag:{idx}")])
         
     buttons.append([

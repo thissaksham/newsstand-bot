@@ -94,8 +94,7 @@ async def search_magazines(query: str) -> list[dict]:
             soup = BeautifulSoup(resp.text, 'html.parser')
             stories = soup.find_all(class_="story")
             
-            editions = []
-            seen_editions = set()
+            editions_map = {}
             
             for s in stories:
                 title_a = s.find(class_="stitle").find('a') if s.find(class_="stitle") else None
@@ -107,6 +106,7 @@ async def search_magazines(query: str) -> list[dict]:
                 if mlink:
                     tag_links = [a for a in mlink.find_all('a', href=True) if '/tags/' in a['href']]
                     
+                    story_countries = []
                     story_magazines = []
                     for tl in tag_links:
                         t_name = tl.get_text(strip=True)
@@ -114,8 +114,10 @@ async def search_magazines(query: str) -> list[dict]:
                         if t_url.startswith("/"):
                             t_url = "https://downmagaz.net" + t_url
                             
-                        # Ignore country tags as separate magazines
-                        if t_name.lower() not in [c.lower() for c in COUNTRIES]:
+                        # Separate country tags from magazine tags
+                        if t_name.lower() in [c.lower() for c in COUNTRIES]:
+                            story_countries.append(t_name)
+                        else:
                             story_magazines.append((t_name, t_url))
                             
                     for m_name, m_url in story_magazines:
@@ -128,27 +130,35 @@ async def search_magazines(query: str) -> list[dict]:
                         
                         if pratio > 70 or token_sort > 60 or ratio > 60:
                             edition_name = f"{m_name} {version}".strip() if version else m_name
+                            key = edition_name.lower()
                             
-                            if edition_name.lower() not in seen_editions:
-                                seen_editions.add(edition_name.lower())
+                            # Generate safe slug
+                            tag_slug = slugify(m_name)
+                            if version:
+                                version_slug = slugify(version)
+                                slug = f"mag-{tag_slug}--{version_slug}"
+                            else:
+                                slug = f"mag-{tag_slug}"
                                 
-                                # Generate safe slug
-                                tag_slug = slugify(m_name)
-                                if version:
-                                    version_slug = slugify(version)
-                                    slug = f"mag-{tag_slug}--{version_slug}"
-                                else:
-                                    slug = f"mag-{tag_slug}"
-                                    
-                                editions.append({
+                            if key not in editions_map:
+                                editions_map[key] = {
                                     "edition_name": edition_name,
                                     "tag_name": m_name,
                                     "tag_url": m_url,
                                     "slug": slug,
                                     "version": version,
+                                    "countries": set(story_countries),
                                     "score": max(ratio, token_sort)
-                                })
+                                }
+                            else:
+                                editions_map[key]["countries"].update(story_countries)
             
+            # Convert map to sorted list and format countries
+            editions = []
+            for item in editions_map.values():
+                item["countries"] = sorted(list(item["countries"]))
+                editions.append(item)
+                
             # Sort by score descending
             editions.sort(key=lambda x: x["score"], reverse=True)
             # Remove score key before returning
