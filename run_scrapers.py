@@ -15,7 +15,7 @@ from database.operations import (
 from utils.helpers import get_today, format_date
 from datetime import datetime, date, timezone
 from urllib.parse import quote
-from scrapers.downmagaz_net import scrape_magazine_tag, get_download_links
+from scrapers.downmagaz_net import scrape_magazine_tag, get_download_links, get_magazine_tag_and_version, matches_version
 
 def split_pdf_if_large(filepath: str, max_size_mb: float = 45.0) -> list[str]:
     """Splits a PDF file into multiple files if its size exceeds max_size_mb.
@@ -71,9 +71,10 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
     """
     name = title["name"]
     title_id = title["id"]
+    slug = title["slug"]
     
-    tag_name = name.lower()
-    tag_url = f"https://downmagaz.net/tags/{quote(tag_name)}/"
+    tag_name, version = get_magazine_tag_and_version(name, slug)
+    tag_url = f"https://downmagaz.net/tags/{quote(tag_name.lower())}/"
     
     print(f"[{name}] Scraping tag page {tag_url}...")
     posts = await scrape_magazine_tag(tag_url)
@@ -92,6 +93,10 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
         post_url = post["url"]
         edition_date = post["date"]
         
+        # Check if the post matches the target version
+        if not matches_version(post_title, version):
+            continue
+            
         edition = await get_edition("", title_id, edition_date)
         
         processed_urls = []

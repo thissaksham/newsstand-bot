@@ -39,9 +39,43 @@ def clean_version(tag_name: str, title_text: str) -> str:
     remains = re.sub(r'[\s\-\–\—•.,/]+', ' ', remains).strip()
     return remains
 
-async def search_magazines(query: str) -> list[tuple[str, str, list[str]]]:
+def slugify(text: str) -> str:
+    """Helper to convert text to a safe URL and filename slug."""
+    cleaned = text.lower()
+    cleaned = re.sub(r'[^a-z0-9\s-]', '', cleaned)
+    return re.sub(r'[\s-]+', '-', cleaned).strip('-')
+
+def get_magazine_tag_and_version(title_name: str, title_slug: str) -> tuple[str, str | None]:
+    """Extracts the base tag name and version string from the DB title name and slug.
+    If slug contains '--', it is versioned and we split it.
+    """
+    if "--" in title_slug:
+        parts = title_slug.split("--", 1)
+        version_slug = parts[1]
+        num_words = len(version_slug.split("-"))
+        name_words = title_name.split()
+        version = " ".join(name_words[-num_words:])
+        tag_name = " ".join(name_words[:-num_words])
+        return tag_name, version
+    return title_name, None
+
+def matches_version(post_title: str, version: str | None) -> bool:
+    """Checks if the scraped post title matches the target subscription version."""
+    if not version:
+        return True
+    
+    def normalize(t: str) -> str:
+        t = t.lower()
+        t = re.sub(r'[^a-z0-9]', ' ', t)
+        return ' '.join(t.split())
+        
+    norm_title = normalize(post_title)
+    norm_version = normalize(version)
+    return bool(re.search(r'\b' + re.escape(norm_version) + r'\b', norm_title))
+
+async def search_magazines(query: str) -> list[dict]:
     """Search downmagaz.net for magazines matching query.
-    Returns list of (tag_name, tag_url, versions_list) tuples.
+    Returns list of dicts with edition details.
     """
     search_url = "https://downmagaz.net/index.php?do=search"
     data = {
@@ -60,7 +94,9 @@ async def search_magazines(query: str) -> list[tuple[str, str, list[str]]]:
             soup = BeautifulSoup(resp.text, 'html.parser')
             stories = soup.find_all(class_="story")
             
-            tags = {}
+            editions = []
+            seen_editions = set()
+            
             for s in stories:
                 title_a = s.find(class_="stitle").find('a') if s.find(class_="stitle") else None
                 if not title_a:
@@ -85,27 +121,40 @@ async def search_magazines(query: str) -> list[tuple[str, str, list[str]]]:
                     for m_name, m_url in story_magazines:
                         version = clean_version(m_name, title_text)
                         
-                        if m_name not in tags:
-                            tags[m_name] = {
-                                "url": m_url,
-                                "versions": set()
-                            }
-                        if version:
-                            tags[m_name]["versions"].add(version)
-            
-            # Fuzzy match and filter tags
-            matched_tags = []
-            for tag_name, info in tags.items():
-                ratio = fuzz.ratio(query.lower(), tag_name.lower())
-                pratio = fuzz.partial_ratio(query.lower(), tag_name.lower())
-                token_sort = fuzz.token_sort_ratio(query.lower(), tag_name.lower())
-                
-                if pratio > 70 or token_sort > 60 or ratio > 60:
-                    matched_tags.append((tag_name, info["url"], sorted(list(info["versions"])), max(ratio, token_sort)))
+                        # Fuzzy match the magazine tag name to the query
+                        ratio = fuzz.ratio(query.lower(), m_name.lower())
+                        pratio = fuzz.partial_ratio(query.lower(), m_name.lower())
+                        token_sort = fuzz.token_sort_ratio(query.lower(), m_name.lower())
+                        
+                        if pratio > 70 or token_sort > 60 or ratio > 60:
+                            edition_name = f"{m_name} {version}".strip() if version else m_name
+                            
+                            if edition_name.lower() not in seen_editions:
+                                seen_editions.add(edition_name.lower())
+                                
+                                # Generate safe slug
+                                tag_slug = slugify(m_name)
+                                if version:
+                                    version_slug = slugify(version)
+                                    slug = f"mag-{tag_slug}--{version_slug}"
+                                else:
+                                    slug = f"mag-{tag_slug}"
+                                    
+                                editions.append({
+                                    "edition_name": edition_name,
+                                    "tag_name": m_name,
+                                    "tag_url": m_url,
+                                    "slug": slug,
+                                    "version": version,
+                                    "score": max(ratio, token_sort)
+                                })
             
             # Sort by score descending
-            matched_tags.sort(key=lambda x: x[3], reverse=True)
-            return [(t[0], t[1], t[2]) for t in matched_tags]
+            editions.sort(key=lambda x: x["score"], reverse=True)
+            # Remove score key before returning
+            for e in editions:
+                e.pop("score", None)
+            return editions
             
     except Exception:
         return []

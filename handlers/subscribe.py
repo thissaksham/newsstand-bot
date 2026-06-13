@@ -29,7 +29,13 @@ from database.operations import (
     search_titles,
 )
 from utils.helpers import fuzzy_match_title
-from scrapers.downmagaz_net import search_magazines, scrape_magazine_tag, get_download_links
+from scrapers.downmagaz_net import (
+    search_magazines,
+    scrape_magazine_tag,
+    get_download_links,
+    get_magazine_tag_and_version,
+    matches_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +273,8 @@ async def handle_cat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ── Message: Text search query received ──────────────────────────────────────
 
+# ── Message: Text search query received ──────────────────────────────────────
+
 async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query_text = update.message.text.strip()
     db_path = context.bot_data["config"].db_path
@@ -280,28 +288,39 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
     # 2. Search tags via scraper
     web_results = await search_magazines(query_text)
     
-    # Merge options, prioritizing DB matches, keeping unique by name
-    options = []
-    seen_names = set()
+    # Merge options, prioritizing DB matches, keeping unique by slug
+    merged_results = []
+    seen_slugs = set()
     
-    # Create a map of lowercased name -> versions from web results
-    web_versions_map = {name.lower(): versions for name, _, versions in web_results}
-    
+    # 1. Add DB magazines
     for t in db_magazines:
-        name = t["name"]
-        if name.lower() not in seen_names:
-            versions = web_versions_map.get(name.lower(), [])
-            options.append((name, f"submag:db:{t['id']}", versions))
-            seen_names.add(name.lower())
+        slug = t["slug"]
+        if slug not in seen_slugs:
+            merged_results.append({
+                "is_db": True,
+                "title_id": t["id"],
+                "edition_name": t["name"],
+                "slug": slug,
+            })
+            seen_slugs.add(slug)
             
-    for name, tag_url, versions in web_results:
-        if name.lower() not in seen_names:
-            options.append((name, f"submag:web:{name}", versions))
-            seen_names.add(name.lower())
+    # 2. Add web results
+    for e in web_results:
+        slug = e["slug"]
+        if slug not in seen_slugs:
+            merged_results.append({
+                "is_db": False,
+                "edition_name": e["edition_name"],
+                "tag_name": e["tag_name"],
+                "tag_url": e["tag_url"],
+                "slug": e["slug"],
+                "version": e["version"]
+            })
+            seen_slugs.add(slug)
             
     await status_msg.delete()
     
-    if not options:
+    if not merged_results:
         await update.message.reply_text(
             f"❌ No matching magazines found for <b>{query_text}</b>.\n"
             "Please check the spelling and try again:",
@@ -312,12 +331,14 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
         )
         return AWAITING_MAGAZINE_NAME
 
-    # Show top 8 options with versions in bracket
+    # Save to context user_data to resolve callback limits
+    context.user_data["search_results"] = merged_results
+
+    # Show top 8 options
     buttons = []
-    for name, cb_data, versions in options[:8]:
-        versions_str = f" ({', '.join(versions[:5])})" if versions else ""
-        display_name = f"{name}{versions_str}"
-        buttons.append([InlineKeyboardButton(f"📖 {display_name}", callback_data=cb_data)])
+    for idx, item in enumerate(merged_results[:8]):
+        display_name = item["edition_name"]
+        buttons.append([InlineKeyboardButton(f"📖 {display_name}", callback_data=f"submag:{idx}")])
         
     buttons.append([
         InlineKeyboardButton("🔙 Back to Categories", callback_data="lang:__back__")
@@ -337,8 +358,15 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_submag_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    parts = query.data.split(":", 2)
-    source_type = parts[1]
+    parts = query.data.split(":", 1)
+    idx = int(parts[1])
+    
+    search_results = context.user_data.get("search_results", [])
+    if idx < 0 or idx >= len(search_results):
+        await query.edit_message_text("❌ Session expired or invalid selection. Please try searching again.")
+        return ConversationHandler.END
+        
+    item = search_results[idx]
     db_path = context.bot_data["config"].db_path
     user_id = update.effective_user.id
     
@@ -351,18 +379,13 @@ async def handle_submag_callback(update: Update, context: ContextTypes.DEFAULT_T
         first_name=user.first_name or "",
     )
 
-    if source_type == "db":
-        title_id = int(parts[2])
-        all_titles = await get_all_titles(db_path, active_only=False)
-        title = next((t for t in all_titles if t["id"] == title_id), None)
-        title_name = title["name"] if title else "Magazine"
+    if item["is_db"]:
+        title_id = item["title_id"]
+        title_name = item["edition_name"]
+        slug = item["slug"]
     else:
-        title_name = parts[2]
-        # Generate safe slug
-        cleaned = title_name.lower()
-        cleaned = re.sub(r'[^a-z0-9\s-]', '', cleaned)
-        slug = re.sub(r'[\s-]+', '-', cleaned).strip('-')
-        slug = f"mag-{slug}"
+        title_name = item["edition_name"]
+        slug = item["slug"]
         
         # Check if slug exists in DB
         title = await get_title_by_slug(db_path, slug)
@@ -391,21 +414,25 @@ async def handle_submag_callback(update: Update, context: ContextTypes.DEFAULT_T
         latest_edition_info = ""
         try:
             from urllib.parse import quote
-            tag_url = f"https://downmagaz.net/tags/{quote(title_name.lower())}/"
+            tag_name_for_url, version = get_magazine_tag_and_version(title_name, slug)
+            
+            tag_url = f"https://downmagaz.net/tags/{quote(tag_name_for_url.lower())}/"
             posts = await scrape_magazine_tag(tag_url)
             if posts:
-                latest_post = posts[0]
-                links = await get_download_links(latest_post["url"])
-                if links:
-                    links_html = ""
-                    for domain, href in links:
-                        links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
-                    
-                    latest_edition_info = (
-                        f"\n\n🔥 <b>Latest Edition Available:</b>\n"
-                        f"👉 <b>{latest_post['title']}</b>\n\n"
-                        f"Download Links:\n{links_html}"
-                    )
+                matching_posts = [p for p in posts if matches_version(p["title"], version)]
+                if matching_posts:
+                    latest_post = matching_posts[0]
+                    links = await get_download_links(latest_post["url"])
+                    if links:
+                        links_html = ""
+                        for domain, href in links:
+                            links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                        
+                        latest_edition_info = (
+                            f"\n\n🔥 <b>Latest Edition Available:</b>\n"
+                            f"👉 <b>{latest_post['title']}</b>\n\n"
+                            f"Download Links:\n{links_html}"
+                        )
         except Exception as e:
             logger.error(f"Error fetching latest edition for {title_name}: {e}")
             
