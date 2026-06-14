@@ -355,13 +355,20 @@ async def main():
     today = get_today()
     bot = Bot(token=bot_token)
     
-    print(f"Scraping all active titles for today: {today}")
+    import sys
+    target_slug = sys.argv[1] if len(sys.argv) > 1 else None
     
-    # 1. Get titles that haven't been successfully scraped today (max 7 attempts)
-    pending_titles = await get_pending_scrapes("", scrape_date=today, max_attempts=7)
+    if target_slug:
+        print(f"Scraping specific title slug: {target_slug}")
+        db = await _get_client()
+        resp = await db.table("titles").select("*").eq("slug", target_slug).execute()
+        pending_titles = resp.data if resp.data else []
+    else:
+        print(f"Scraping all active titles for today: {today}")
+        pending_titles = await get_pending_scrapes("", scrape_date=today, max_attempts=7)
     
     if not pending_titles:
-        print("All active titles have already been scraped for today! Exiting.")
+        print("No pending titles to scrape. Exiting.")
         return
         
     print(f"Found {len(pending_titles)} titles pending scrape.")
@@ -449,6 +456,23 @@ async def main():
             await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
             continue
 
+        # Check if this edition_date already exists in DB to prevent duplicate uploads
+        existing_edition = await get_edition("", title["id"], newspaper_date)
+        if existing_edition and existing_edition.get("file_id") and existing_edition.get("status") == "delivered":
+            print(f"[{name}] Edition for {newspaper_date} already exists and is delivered. Skipping upload.")
+            try:
+                if os.path.exists(output_file):
+                    os.remove(output_file)
+            except Exception as e:
+                print(f"Failed to remove output file: {e}")
+            
+            # If the edition is today's, or today is Sunday (weekday == 6) and we fell back to Saturday
+            if newspaper_date == today or today.weekday() == 6:
+                await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
+                
+            await deliver_to_subscribers(bot, existing_edition["id"], existing_edition["file_id"], title["id"], name, newspaper_date)
+            continue
+
         # 3. Upload to Telegram Storage Channel
         friendly_date = format_date(newspaper_date)
         print(f"[{name}] Uploading to Telegram Channel...")
@@ -498,14 +522,15 @@ async def main():
                 message_id=first_message_id
             )
             
-            # Mark the scrape as successfully found!
-            await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=True)
+            # Mark today's scrape as successfully found if it's today's edition or today is Sunday
+            if newspaper_date == today or today.weekday() == 6:
+                await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=True)
             
             print(f"[{name}] Success! Database updated.")
             
             # 5. Deliver to Users
             await deliver_to_subscribers(bot, edition_id, combined_file_id, title["id"], name, newspaper_date)
-                
+            
         except Exception as e:
             print(f"[{name}] Error during upload/delivery: {e}")
             
