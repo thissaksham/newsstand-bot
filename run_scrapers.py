@@ -106,7 +106,11 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
         if post_url in processed_urls:
             continue
             
-        print(f"[{name}] Found new post: {post_title} for edition date {edition_date}")
+        print(f"[{name}] Found post: {post_title} for edition date {edition_date}")
+        
+        # Only deliver to subscribers if the edition is new (published within last 3 days)
+        # Old historical editions are stored in the DB but not sent as alerts
+        is_new_edition = edition_date >= today - timedelta(days=3)
         
         links = await get_download_links(post_url)
         if not links:
@@ -114,7 +118,8 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
             continue
             
         subscribers = await get_subscribers_for_title("", title_id)
-        if subscribers:
+        delivered_users = []
+        if subscribers and is_new_edition:
             links_html = ""
             for domain, href in links:
                 links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
@@ -135,11 +140,15 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
                         parse_mode="HTML",
                         disable_web_page_preview=True
                     )
+                    delivered_users.append(user_id)
                     print(f"[{name}] Delivered to {user_id}")
                 except Exception as e:
                     print(f"[{name}] Failed to deliver to {user_id}: {e}")
+        elif not is_new_edition:
+            print(f"[{name}] Skipping alert for old historical edition {post_title} (date: {edition_date}).")
                     
         # Update DB: mark this post_url as processed in edition
+        edition_id = None
         if not edition:
             new_edition_id = await add_edition(
                 db_path="",
@@ -154,6 +163,7 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
                 status="delivered",
                 file_id=post_url
             )
+            edition_id = new_edition_id
         else:
             new_file_id = f"{edition.get('file_id') or ''},{post_url}".strip(",")
             await update_edition_status(
@@ -162,6 +172,13 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
                 status="delivered",
                 file_id=new_file_id
             )
+            edition_id = edition["id"]
+            
+        # Log delivery status for subscribers (only if it was a new edition that we attempted to deliver)
+        if subscribers and is_new_edition:
+            for user_id in subscribers:
+                status = "success" if user_id in delivered_users else "failed"
+                await log_delivery("", user_id, edition_id, status)
             
         success_any = True
         
@@ -225,7 +242,7 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
         return
         
     # 2. Get all editions for today
-    editions_resp = await db.table("editions").select("id, title_id, file_id, titles(name)").eq("date", scrape_date.isoformat()).execute()
+    editions_resp = await db.table("editions").select("id, title_id, file_id, titles(name, category)").eq("date", scrape_date.isoformat()).execute()
     if not editions_resp.data:
         return
         
@@ -236,7 +253,8 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
             editions_map[row["title_id"]] = {
                 "edition_id": row["id"],
                 "file_id": row["file_id"],
-                "title_name": row["titles"]["name"] if row.get("titles") else f"Title #{row['title_id']}"
+                "title_name": row["titles"]["name"] if row.get("titles") else f"Title #{row['title_id']}",
+                "category": row["titles"]["category"] if row.get("titles") else "Newspaper"
             }
     
     # 3. Check each subscription
@@ -249,26 +267,49 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
             edition_id = ed["edition_id"]
             file_id = ed["file_id"]
             title_name = ed["title_name"]
+            category = ed.get("category", "Newspaper")
             
             # Check if already delivered
             if not await has_been_delivered("", user_id, edition_id):
                 friendly_date = format_date(scrape_date)
-                print(f"[Catch-up] Delivering {title_name} to {user_id}...")
-                file_ids = file_id.split(",")
-                try:
-                    for idx, fid in enumerate(file_ids):
-                        part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
-                        await bot.send_document(
-                            chat_id=user_id,
-                            document=fid,
-                            caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
-                            parse_mode="Markdown"
-                        )
-                    await log_delivery("", user_id, edition_id, "success")
-                    print(f"[Catch-up] Delivered to {user_id}")
-                except RetryAfter as e:
-                    print(f"[Catch-up] Rate limited! Sleeping for {e.retry_after}s")
-                    await asyncio.sleep(e.retry_after)
+                
+                if category == "Magazine":
+                    print(f"[Catch-up] Delivering magazine {title_name} to {user_id}...")
+                    # file_id contains the post_url(s)
+                    post_urls = file_id.split(",")
+                    success_all = True
+                    for post_url in post_urls:
+                        links = await get_download_links(post_url)
+                        if links:
+                            links_html = ""
+                            for domain, href in links:
+                                links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                            msg_text = (
+                                f"📖 <b>New Magazine Alert!</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                f"New edition of <b>{title_name}</b> is available for <b>{friendly_date}</b>:\n\n"
+                                f"Download Links:\n{links_html}"
+                            )
+                            try:
+                                await bot.send_message(
+                                    chat_id=user_id,
+                                    text=msg_text,
+                                    parse_mode="HTML",
+                                    disable_web_page_preview=True
+                                )
+                            except Exception as e:
+                                print(f"[Catch-up] Failed to deliver magazine alert to {user_id}: {e}")
+                                success_all = False
+                        else:
+                            success_all = False
+                    if success_all:
+                        await log_delivery("", user_id, edition_id, "success")
+                        print(f"[Catch-up] Delivered magazine {title_name} to {user_id}")
+                    else:
+                        await log_delivery("", user_id, edition_id, "failed")
+                else:
+                    print(f"[Catch-up] Delivering {title_name} to {user_id}...")
+                    file_ids = file_id.split(",")
                     try:
                         for idx, fid in enumerate(file_ids):
                             part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
@@ -279,11 +320,25 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
                                 parse_mode="Markdown"
                             )
                         await log_delivery("", user_id, edition_id, "success")
-                    except Exception as ex:
-                        print(f"[Catch-up] Retry failed: {ex}")
-                except Exception as e:
-                    print(f"[Catch-up] Failed to deliver: {e}")
-                    await log_delivery("", user_id, edition_id, "failed")
+                        print(f"[Catch-up] Delivered to {user_id}")
+                    except RetryAfter as e:
+                        print(f"[Catch-up] Rate limited! Sleeping for {e.retry_after}s")
+                        await asyncio.sleep(e.retry_after)
+                        try:
+                            for idx, fid in enumerate(file_ids):
+                                part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
+                                await bot.send_document(
+                                    chat_id=user_id,
+                                    document=fid,
+                                    caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                                    parse_mode="Markdown"
+                                )
+                            await log_delivery("", user_id, edition_id, "success")
+                        except Exception as ex:
+                            print(f"[Catch-up] Retry failed: {ex}")
+                    except Exception as e:
+                        print(f"[Catch-up] Failed to deliver: {e}")
+                        await log_delivery("", user_id, edition_id, "failed")
                 
                 await asyncio.sleep(0.2)
 
@@ -315,19 +370,24 @@ async def main():
     ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     current_hour = ist_now.hour
     
+    # If GITHUB_EVENT_NAME is not set (local run) or is 'workflow_dispatch' (manual run), bypass hour filters
+    github_event = os.getenv("GITHUB_EVENT_NAME")
+    is_manual = (github_event is None) or (github_event == "workflow_dispatch")
+    if is_manual:
+        print("Manual or local run detected. Bypassing scheduling hour filters.")
+        
     filtered_titles = []
     for title in pending_titles:
         category = title.get("category", "Newspaper")
-        if category == "Newspaper":
-            if 6 <= current_hour <= 12:
+        if is_manual:
+            filtered_titles.append(title)
+        elif category == "Newspaper":
+            if current_hour >= 6:
                 filtered_titles.append(title)
             else:
-                print(f"[{title['name']}] Skipped: Newspaper checks only run between 6am and 12pm IST (current hour: {current_hour} IST).")
+                print(f"[{title['name']}] Skipped: Newspaper checks only run after 6am IST (current hour: {current_hour} IST).")
         elif category == "Magazine":
-            if current_hour in (0, 6, 12, 18):
-                filtered_titles.append(title)
-            else:
-                print(f"[{title['name']}] Skipped: Magazine checks only run at 12am, 6am, 12pm, 6pm IST (current hour: {current_hour} IST).")
+            filtered_titles.append(title)
         else:
             filtered_titles.append(title)
             

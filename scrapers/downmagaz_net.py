@@ -178,8 +178,10 @@ def parse_date_from_title(title_text: str) -> date | None:
         try:
             if int(d1) > 12:
                 return datetime.strptime(f"{d1}.{d2}.{y}", "%d.%m.%Y").date()
+            elif int(d2) > 12:
+                return datetime.strptime(f"{d1}.{d2}.{y}", "%m.%d.%Y").date()
             else:
-                if "audio" in title_text.lower():
+                if any(k in title_text.lower() for k in ("washington", "audio", "usa")):
                     return datetime.strptime(f"{d1}.{d2}.{y}", "%m.%d.%Y").date()
                 else:
                     return datetime.strptime(f"{d1}.{d2}.{y}", "%d.%m.%Y").date()
@@ -199,6 +201,18 @@ def parse_date_from_title(title_text: str) -> date | None:
             if m_name == m_fullname or m_name == m_shortname:
                 return date(int(y_str), m_num, 1)
                 
+    # Pattern 3: MM.YYYY or MM-YYYY (e.g. 07.2022)
+    # Ensure it's not part of a larger date like DD.MM.YYYY by checking there is no preceding dot/dash/digit
+    month_year_match = re.search(r'(?<![\d.-])\b(\d{1,2})[.-](\d{4})\b', title_text)
+    if month_year_match:
+        m, y = month_year_match.groups()
+        try:
+            m_num = int(m)
+            if 1 <= m_num <= 12:
+                return date(int(y), m_num, 1)
+        except Exception:
+            pass
+            
     return None
 
 async def scrape_magazine_tag(tag_url: str) -> list[dict]:
