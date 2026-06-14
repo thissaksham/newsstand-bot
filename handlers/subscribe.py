@@ -419,35 +419,71 @@ async def handle_submag_callback(update: Update, context: ContextTypes.DEFAULT_T
     else:
         await subscribe(db_path, user_id, title_id)
         
+        # Determine category dynamically
+        category = "Newspaper"
+        title_row = await get_title_by_slug(db_path, slug)
+        if title_row:
+            category = title_row.get("category", "Newspaper")
+            
         latest_edition_info = ""
-        try:
-            from urllib.parse import quote
-            tag_name_for_url, version = get_magazine_tag_and_version(title_name, slug)
-            
-            tag_url = f"https://downmagaz.net/tags/{quote(tag_name_for_url.lower())}/"
-            posts = await scrape_magazine_tag(tag_url)
-            if posts:
-                matching_posts = [p for p in posts if matches_version(p["title"], version)]
-                if matching_posts:
-                    latest_post = matching_posts[0]
-                    links = await get_download_links(latest_post["url"])
-                    if links:
-                        links_html = ""
-                        for domain, href in links:
-                            links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
-                        
-                        latest_edition_info = (
-                            f"\n\n🔥 <b>Latest Edition Available:</b>\n"
-                            f"👉 <b>{latest_post['title']}</b>\n\n"
-                            f"Download Links:\n{links_html}"
+        sent_today = False
+        
+        if category == "Magazine":
+            try:
+                from urllib.parse import quote
+                tag_name_for_url, version = get_magazine_tag_and_version(title_name, slug)
+                
+                tag_url = f"https://downmagaz.net/tags/{quote(tag_name_for_url.lower())}/"
+                posts = await scrape_magazine_tag(tag_url)
+                if posts:
+                    matching_posts = [p for p in posts if matches_version(p["title"], version)]
+                    if matching_posts:
+                        latest_post = matching_posts[0]
+                        links = await get_download_links(latest_post["url"])
+                        if links:
+                            links_html = ""
+                            for domain, href in links:
+                                links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                            
+                            latest_edition_info = (
+                                f"\n\n🔥 <b>Latest Edition Available:</b>\n"
+                                f"👉 <b>{latest_post['title']}</b>\n\n"
+                                f"Download Links:\n{links_html}"
+                            )
+            except Exception as e:
+                logger.error(f"Error fetching latest edition for {title_name}: {e}")
+        else:
+            try:
+                from utils.helpers import get_today, format_date
+                from database.operations import get_edition, log_delivery
+                today = get_today()
+                edition = await get_edition(db_path, title_id, today)
+                if edition and edition.get("file_id") and edition.get("status") == "delivered":
+                    friendly_date = format_date(today)
+                    file_ids = edition["file_id"].split(",")
+                    for idx, fid in enumerate(file_ids):
+                        part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
+                        await context.bot.send_document(
+                            chat_id=user_id,
+                            document=fid,
+                            caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                            parse_mode="Markdown"
                         )
-        except Exception as e:
-            logger.error(f"Error fetching latest edition for {title_name}: {e}")
-            
+                    await log_delivery(db_path, user_id, edition["id"], "success")
+                    sent_today = True
+            except Exception as e:
+                logger.error(f"Error delivering today's newspaper edition upon subscription: {e}")
+                
+        confirm_msg = f"✅ Subscribed to <b>{title_name}</b>!\n\n"
+        if category == "Magazine":
+            confirm_msg += f"Whenever a new edition comes, we'll send you the download links automatically! 📖🚀{latest_edition_info}"
+        else:
+            confirm_msg += "Whenever a new edition comes, we'll send you the PDF document automatically! 📰🚀"
+            if sent_today:
+                confirm_msg += "\n\n✨ I have also sent you today's edition above!"
+                
         await query.edit_message_text(
-            f"✅ Subscribed to <b>{title_name}</b>!\n\n"
-            f"Whenever a new edition comes, we'll send you the download links automatically! 📖🚀"
-            f"{latest_edition_info}",
+            confirm_msg,
             parse_mode="HTML",
             disable_web_page_preview=True
         )
