@@ -92,12 +92,11 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
             slug = sub["slug"]
             category = sub.get("category", "Newspaper")
             
-            # Check if there is a delivered edition for this title
             editions_resp = await db.table("editions")\
                 .select("*")\
                 .eq("title_id", tid)\
                 .eq("status", "delivered")\
-                .order("date", descending=True)\
+                .order("date", desc=True)\
                 .limit(1)\
                 .execute()
                 
@@ -169,7 +168,59 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                         )
                         stdout, stderr = await proc.communicate()
                         print(f"[BG Scrape {t_slug}] Finished. Exit code: {proc.returncode}")
-                        if proc.returncode != 0:
+                        if proc.returncode == 0:
+                            # Query the DB for the latest edition of this title
+                            db = await _get_client()
+                            editions_resp = await db.table("editions")\
+                                .select("*")\
+                                .eq("title_id", tid)\
+                                .eq("status", "delivered")\
+                                .order("date", desc=True)\
+                                .limit(1)\
+                                .execute()
+                                
+                            if editions_resp.data:
+                                latest_edition = editions_resp.data[0]
+                                edition_id = latest_edition["id"]
+                                edition_date = datetime.date.fromisoformat(latest_edition["date"])
+                                file_id = latest_edition.get("file_id")
+                                
+                                if not await has_been_delivered(db_path, user_id, edition_id):
+                                    friendly_date = format_date(edition_date)
+                                    if category == "Magazine":
+                                        from scrapers.downmagaz_net import get_download_links
+                                        post_urls = file_id.split(",")
+                                        for post_url in post_urls:
+                                            links = await get_download_links(post_url)
+                                            if links:
+                                                links_html = ""
+                                                for domain, href in links:
+                                                    links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                                                msg_text = (
+                                                    f"📖 <b>New Magazine Alert!</b>\n"
+                                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                                    f"New edition of <b>{title_name}</b> is available:\n\n"
+                                                    f"Download Links:\n{links_html}"
+                                                )
+                                                await bot.send_message(
+                                                    chat_id=user_id,
+                                                    text=msg_text,
+                                                    parse_mode="HTML",
+                                                    disable_web_page_preview=True
+                                                )
+                                        await log_delivery(db_path, user_id, edition_id, "success")
+                                    else:
+                                        file_ids = file_id.split(",")
+                                        for idx, fid in enumerate(file_ids):
+                                            part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
+                                            await bot.send_document(
+                                                chat_id=user_id,
+                                                document=fid,
+                                                caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                                                parse_mode="Markdown"
+                                            )
+                                        await log_delivery(db_path, user_id, edition_id, "success")
+                        else:
                             print(f"[BG Scrape {t_slug}] Stderr: {stderr.decode()}")
                     except Exception as ex:
                         print(f"[BG Scrape {t_slug}] Process launch failed: {ex}")

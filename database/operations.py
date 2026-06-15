@@ -218,7 +218,8 @@ async def get_user_subscriptions(db_path: str, user_id: int) -> list[dict[str, A
             "title_id": row["title_id"],
             "name": title.get("name"),
             "slug": title.get("slug"),
-            "language": title.get("language")
+            "language": title.get("language"),
+            "category": title.get("category")
         })
     # Sort by name
     subs.sort(key=lambda x: x["name"])
