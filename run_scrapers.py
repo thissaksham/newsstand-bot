@@ -186,7 +186,7 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
         await upsert_scrape_status("", title_id, today, status="found", increment_attempts=True)
     else:
         # tag page parsed successfully but no new posts found
-        await upsert_scrape_status("", title_id, today, status="found", increment_attempts=True)
+        await upsert_scrape_status("", title_id, today, status="pending", increment_attempts=False)
 
 async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, newspaper_date: date):
     """Deliver the edition to all subscribed users."""
