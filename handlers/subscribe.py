@@ -63,7 +63,7 @@ def _flag(language: str) -> str:
     return LANG_FLAGS.get(language.lower(), "🌐")
 
 
-async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, title_id: int = None) -> None:
+async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, title_id: int = None, query=None, update=None) -> None:
     """Checks and delivers the latest edition of subscribed titles to the user
     if they haven't received them yet.
     If the edition is not in the database, it spawns a background scraper run.
@@ -92,6 +92,11 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
             slug = sub["slug"]
             category = sub.get("category", "Newspaper")
             
+            confirm_text = (
+                f"✅ Subscribed to <b>{title_name}</b>!\n"
+                f"Whenever a new edition comes, we'll send it to you automatically! 🚀"
+            )
+            
             editions_resp = await db.table("editions")\
                 .select("*")\
                 .eq("title_id", tid)\
@@ -105,60 +110,103 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                 edition_id = latest_edition["id"]
                 edition_date = datetime.date.fromisoformat(latest_edition["date"])
                 file_id = latest_edition.get("file_id")
+                friendly_date = format_date(edition_date)
                 
                 # Check if already delivered to this user
-                if not await has_been_delivered(db_path, user_id, edition_id):
-                    friendly_date = format_date(edition_date)
-                    if category == "Magazine":
-                        from scrapers.downmagaz_net import get_download_links
-                        post_urls = file_id.split(",")
-                        for post_url in post_urls:
-                            links = await get_download_links(post_url)
-                            if links:
-                                links_html = ""
-                                for domain, href in links:
-                                    links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
-                                msg_text = (
-                                    f"📖 <b>New Magazine Alert!</b>\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                    f"New edition of <b>{title_name}</b> is available:\n\n"
-                                    f"Download Links:\n{links_html}"
-                                )
-                                await bot.send_message(
+                already_delivered = await has_been_delivered(db_path, user_id, edition_id)
+                
+                if category == "Magazine":
+                    from scrapers.downmagaz_net import get_download_links
+                    post_urls = file_id.split(",")
+                    links = []
+                    for post_url in post_urls:
+                        links.extend(await get_download_links(post_url))
+                    
+                    if links:
+                        links_html = ""
+                        for domain, href in links:
+                            links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                        
+                        msg_text = (
+                            f"{confirm_text}\n\n"
+                            f"📖 <b>Latest Available Edition ({friendly_date}):</b>\n"
+                            f"{links_html}"
+                        )
+                    else:
+                        msg_text = confirm_text
+                        
+                    if query:
+                        await query.edit_message_text(msg_text, parse_mode="HTML", disable_web_page_preview=True)
+                    elif update:
+                        await update.message.reply_text(msg_text, parse_mode="HTML", disable_web_page_preview=True)
+                    else:
+                        await bot.send_message(chat_id=user_id, text=msg_text, parse_mode="HTML", disable_web_page_preview=True)
+                        
+                    if not already_delivered:
+                        await log_delivery(db_path, user_id, edition_id, "success")
+                else:
+                    if not already_delivered:
+                        file_ids = file_id.split(",")
+                        if len(file_ids) == 1:
+                            caption_text = (
+                                f"✅ Subscribed to **{title_name}**!\n"
+                                f"Whenever a new edition comes, we'll send it to you automatically! 🚀\n\n"
+                                f"📰 Here is the latest available edition for {friendly_date}!"
+                            )
+                            if query:
+                                try:
+                                    await query.delete_message()
+                                except Exception:
+                                    pass
+                            await bot.send_document(
+                                chat_id=user_id,
+                                document=file_ids[0],
+                                caption=caption_text,
+                                parse_mode="Markdown"
+                            )
+                        else:
+                            if query:
+                                await query.edit_message_text(confirm_text, parse_mode="HTML")
+                            elif update:
+                                await update.message.reply_text(confirm_text, parse_mode="HTML")
+                            else:
+                                await bot.send_message(chat_id=user_id, text=confirm_text, parse_mode="HTML")
+                                
+                            for idx, fid in enumerate(file_ids):
+                                part_suffix = f" (Part {idx+1}/{len(file_ids)})"
+                                await bot.send_document(
                                     chat_id=user_id,
-                                    text=msg_text,
-                                    parse_mode="HTML",
-                                    disable_web_page_preview=True
+                                    document=fid,
+                                    caption=f"📰 Here is the latest available edition of **{title_name}**{part_suffix} for {friendly_date}!",
+                                    parse_mode="Markdown"
                                 )
                         await log_delivery(db_path, user_id, edition_id, "success")
                     else:
-                        file_ids = file_id.split(",")
-                        for idx, fid in enumerate(file_ids):
-                            part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
-                            await bot.send_document(
-                                chat_id=user_id,
-                                document=fid,
-                                caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
-                                parse_mode="Markdown"
-                            )
-                        await log_delivery(db_path, user_id, edition_id, "success")
+                        if query:
+                            await query.edit_message_text(confirm_text, parse_mode="HTML")
+                        elif update:
+                            await update.message.reply_text(confirm_text, parse_mode="HTML")
+                        else:
+                            await bot.send_message(chat_id=user_id, text=confirm_text, parse_mode="HTML")
             else:
                 # No edition in the DB yet! Let's trigger a background scrape for this title
-                # We tell the user we are searching the web for it
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=f"⏳ <b>Scraping in progress...</b>\n\n"
-                         f"We are fetching the latest edition of <b>{title_name}</b> from the web. "
-                         f"It will be delivered to you in a few moments! 🚀",
-                    parse_mode="HTML"
+                status_text = (
+                    f"✅ Subscribed to <b>{title_name}</b>!\n"
+                    f"Whenever a new edition comes, we'll send it to you automatically! 🚀\n\n"
+                    f"⏳ <b>Scraping in progress...</b>\n"
+                    f"We are fetching the latest edition from the web. It will be delivered here shortly!"
                 )
+                if query:
+                    await query.edit_message_text(status_text, parse_mode="HTML")
+                elif update:
+                    await update.message.reply_text(status_text, parse_mode="HTML")
+                else:
+                    await bot.send_message(chat_id=user_id, text=status_text, parse_mode="HTML")
                 
-                # Run run_scrapers.py in a background process
                 python_exe = sys.executable
                 script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "run_scrapers.py")
                 script_path = os.path.abspath(script_path)
                 
-                # Start the background process
                 async def run_bg_proc(p_exe, s_path, t_slug):
                     try:
                         proc = await asyncio.create_subprocess_exec(
@@ -169,7 +217,6 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                         stdout, stderr = await proc.communicate()
                         print(f"[BG Scrape {t_slug}] Finished. Exit code: {proc.returncode}")
                         if proc.returncode == 0:
-                            # Query the DB for the latest edition of this title
                             db = await _get_client()
                             editions_resp = await db.table("editions")\
                                 .select("*")\
@@ -190,24 +237,23 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                                     if category == "Magazine":
                                         from scrapers.downmagaz_net import get_download_links
                                         post_urls = file_id.split(",")
+                                        links = []
                                         for post_url in post_urls:
-                                            links = await get_download_links(post_url)
-                                            if links:
-                                                links_html = ""
-                                                for domain, href in links:
-                                                    links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
-                                                msg_text = (
-                                                    f"📖 <b>New Magazine Alert!</b>\n"
-                                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                                    f"New edition of <b>{title_name}</b> is available:\n\n"
-                                                    f"Download Links:\n{links_html}"
-                                                )
-                                                await bot.send_message(
-                                                    chat_id=user_id,
-                                                    text=msg_text,
-                                                    parse_mode="HTML",
-                                                    disable_web_page_preview=True
-                                                )
+                                            links.extend(await get_download_links(post_url))
+                                        if links:
+                                            links_html = ""
+                                            for domain, href in links:
+                                                links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                                            msg_text = (
+                                                f"📖 <b>Latest Available Edition ({friendly_date}):</b>\n"
+                                                f"{links_html}"
+                                            )
+                                            await bot.send_message(
+                                                chat_id=user_id,
+                                                text=msg_text,
+                                                parse_mode="HTML",
+                                                disable_web_page_preview=True
+                                            )
                                         await log_delivery(db_path, user_id, edition_id, "success")
                                     else:
                                         file_ids = file_id.split(",")
@@ -216,7 +262,7 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                                             await bot.send_document(
                                                 chat_id=user_id,
                                                 document=fid,
-                                                caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                                                caption=f"📰 Here is the latest available edition of **{title_name}**{part_suffix} for {friendly_date}!",
                                                 parse_mode="Markdown"
                                             )
                                         await log_delivery(db_path, user_id, edition_id, "success")
@@ -592,15 +638,8 @@ async def handle_submag_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
     else:
         await subscribe(db_path, user_id, title_id)
-        
-        await query.edit_message_text(
-            f"✅ Subscribed to <b>{title_name}</b>!\n\n"
-            "Whenever a new edition comes, we'll send it to you automatically! 🚀",
-            parse_mode="HTML"
-        )
-        
-        # Deliver latest edition immediately (will scrape if not in DB)
-        await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title_id)
+        # Deliver latest edition immediately (will scrape if not in DB) and send combined confirmation message
+        await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title_id, query=query)
         
     return ConversationHandler.END
 
@@ -673,12 +712,8 @@ async def sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
         await subscribe(db_path, user_id, title["id"])
-        await update.message.reply_text(
-            f"✅ Subscribed to <b>{title['name']}</b>!\n"
-            "📬 You'll receive it automatically.",
-            parse_mode="HTML",
-        )
-        await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title["id"])
+        # Deliver latest edition immediately (will scrape if not in DB) and send combined confirmation message
+        await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title["id"], update=update)
         return
 
     if len(matches) > 1:
@@ -792,12 +827,8 @@ async def handle_quicksub_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     await subscribe(db_path, user_id, title_id)
-    await query.edit_message_text(
-        f"✅ Subscribed to <b>{title_name}</b>!\n"
-        "📬 You'll receive it automatically.",
-        parse_mode="HTML",
-    )
-    await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title_id)
+    # Deliver latest edition immediately (will scrape if not in DB) and send combined confirmation message
+    await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title_id, query=query)
 
 
 async def handle_quickunsub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
