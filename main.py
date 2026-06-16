@@ -70,9 +70,42 @@ async def post_init(application: Application) -> None:
     # 1. Sync titles and packs from config.yaml to DB
     logger.info("Syncing titles from config...")
     await sync_titles_from_config(config.db_path, config.titles)
-    
+    # 2. Start the background scheduler for scheduled scrapers
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        
+        async def run_scheduled_scrape():
+            logger.info("[Scheduler] Starting scheduled scrape run...")
+            import sys
+            import os
+            import asyncio
+            
+            python_exe = sys.executable
+            script_path = os.path.join(os.path.dirname(__file__), "run_scrapers.py")
+            script_path = os.path.abspath(script_path)
+            
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    python_exe, script_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
+                logger.info(f"[Scheduler] Scraper finished. Exit code: {proc.returncode}")
+                if proc.returncode != 0:
+                    logger.error(f"[Scheduler] Scraper failed: {stderr.decode()}")
+            except Exception as e:
+                logger.exception(f"[Scheduler] Failed to run scheduled scraper: {e}")
 
-    
+        scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
+        # Run every 15 minutes
+        scheduler.add_job(run_scheduled_scrape, "interval", minutes=15)
+        # Also run immediately once on startup to check for missed editions
+        scheduler.add_job(run_scheduled_scrape)
+        scheduler.start()
+        logger.info("[Scheduler] AsyncIOScheduler started successfully (running every 15 minutes + immediately on startup).")
+    except Exception as e:
+        logger.exception(f"[Scheduler] Failed to initialize APScheduler: {e}")
     # 5. Register bot commands in Telegram
     logger.info("Setting bot commands...")
     await application.bot.set_my_commands(BOT_COMMANDS)
