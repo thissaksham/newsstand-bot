@@ -9,7 +9,7 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-from .start import start_handler, help_handler
+from .start import start_handler, help_handler, run_scraper_handler
 from .subscribe import subscribe_conversation_handler, sub_handler, unsub_handler
 from .subscriptions import subscriptions_handler
 from .get import get_conversation_handler
@@ -30,6 +30,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("unsub", unsub_handler))
     app.add_handler(CommandHandler("unsubscribe", unsub_handler))
     app.add_handler(CommandHandler("subscriptions", subscriptions_handler))
+    app.add_handler(CommandHandler("run_scraper", run_scraper_handler))
 
     # ── Callback query router (catch-all for inline keyboard presses) ────────
     app.add_handler(CallbackQueryHandler(callback_router))
