@@ -2,12 +2,17 @@
 Newsstand Bot — Main Entry Point
 
 Starts the Telegram bot with all handlers, initializes the database,
-sets up the scraper manager, and starts the delivery scheduler.
+and configures the keep-alive self-ping (for Render free-tier).
+
+Scraping is handled externally by GitHub Actions (run_scrapers.py),
+NOT by an in-process scheduler — this avoids overlap and ensures
+the bot process stays lightweight and responsive.
 """
 
 import asyncio
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from telegram import BotCommand, Update
@@ -26,13 +31,16 @@ logging.basicConfig(
     level=logging.INFO,
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log", encoding="utf-8"),
+        RotatingFileHandler(
+            "bot.log", encoding="utf-8",
+            maxBytes=5 * 1024 * 1024,  # 5 MB per file
+            backupCount=3,             # keep 3 rotated backups
+        ),
     ],
 )
 
 # Silence noisy loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 logger = logging.getLogger("newsstand")
 
@@ -49,75 +57,45 @@ BOT_COMMANDS = [
 
 
 async def keep_alive_ping(url: str):
-    """Periodically pings the webhook URL to prevent Render free-tier from sleeping."""
+    """Periodically pings the webhook URL to prevent Render free-tier from sleeping.
+    
+    Creates a fresh httpx client for each ping to avoid stale connection pools.
+    """
     await asyncio.sleep(60)  # Wait 1 minute to allow server to fully boot
-    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-        while True:
-            try:
+    while True:
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
                 response = await client.get(url)
                 logger.info(f"Keep-alive ping to {url} returned status {response.status_code}")
-            except Exception as e:
-                logger.warning(f"Keep-alive ping to {url} failed: {e}")
-            await asyncio.sleep(600)  # Ping every 10 minutes
+        except Exception as e:
+            logger.warning(f"Keep-alive ping to {url} failed: {e}")
+        await asyncio.sleep(600)  # Ping every 10 minutes
 
 
 # ─── Lifecycle Hooks ──────────────────────────────────────────────────────
 
 async def post_init(application: Application) -> None:
-    """Runs after Application.initialize() — set up DB, scrapers, scheduler."""
+    """Runs after Application.initialize() — set up DB and bot commands."""
     config = Config.get()
     
     # 1. Sync titles and packs from config.yaml to DB
     logger.info("Syncing titles from config...")
     await sync_titles_from_config(config.db_path, config.titles)
-    # 2. Start the background scheduler for scheduled scrapers
-    try:
-        from apscheduler.schedulers.asyncio import AsyncIOScheduler
-        
-        async def run_scheduled_scrape():
-            logger.info("[Scheduler] Starting scheduled scrape run...")
-            import sys
-            import os
-            import asyncio
-            
-            python_exe = sys.executable
-            script_path = os.path.join(os.path.dirname(__file__), "run_scrapers.py")
-            script_path = os.path.abspath(script_path)
-            
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    python_exe, script_path,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await proc.communicate()
-                logger.info(f"[Scheduler] Scraper finished. Exit code: {proc.returncode}")
-                if proc.returncode != 0:
-                    logger.error(f"[Scheduler] Scraper failed: {stderr.decode()}")
-            except Exception as e:
-                logger.exception(f"[Scheduler] Failed to run scheduled scraper: {e}")
 
-        scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
-        # Run every 15 minutes
-        scheduler.add_job(run_scheduled_scrape, "interval", minutes=15)
-        # Also run immediately once on startup to check for missed editions
-        scheduler.add_job(run_scheduled_scrape)
-        scheduler.start()
-        logger.info("[Scheduler] AsyncIOScheduler started successfully (running every 15 minutes + immediately on startup).")
-    except Exception as e:
-        logger.exception(f"[Scheduler] Failed to initialize APScheduler: {e}")
-    # 5. Register bot commands in Telegram
+    # 2. Register bot commands in Telegram
     logger.info("Setting bot commands...")
     await application.bot.set_my_commands(BOT_COMMANDS)
     
-    # 6. Store config in bot_data for handlers to access
+    # 3. Store config in bot_data for handlers to access
     application.bot_data["config"] = config
     
-    # 7. Start self-ping keep-alive if WEBHOOK_URL is configured
+    # 4. Start self-ping keep-alive if WEBHOOK_URL is configured
+    # Store the task reference in bot_data to prevent garbage collection
     webhook_url = os.environ.get("WEBHOOK_URL")
     if webhook_url:
         logger.info(f"Starting keep-alive self-ping for {webhook_url}")
-        asyncio.create_task(keep_alive_ping(webhook_url))
+        task = asyncio.create_task(keep_alive_ping(webhook_url))
+        application.bot_data["_keep_alive_task"] = task
         
     logger.info("Bot initialized successfully!")
 
@@ -125,6 +103,16 @@ async def post_init(application: Application) -> None:
 async def post_shutdown(application: Application) -> None:
     """Cleanup on shutdown."""
     logger.info("Shutting down...")
+    
+    # Cancel keep-alive task if running
+    keep_alive_task = application.bot_data.get("_keep_alive_task")
+    if keep_alive_task and not keep_alive_task.done():
+        keep_alive_task.cancel()
+        try:
+            await keep_alive_task
+        except asyncio.CancelledError:
+            pass
+
     logger.info("Bot shut down cleanly.")
 
 

@@ -1,6 +1,29 @@
+"""
+Newsstand Bot — Scraper & Delivery Engine
+
+Standalone script invoked by GitHub Actions (every 15 minutes) or
+manually via /run_scraper. Scrapes newspapers and magazines, uploads
+to Telegram storage channel, and delivers to subscribers.
+
+Key reliability features:
+- Process-level lock file prevents overlapping runs
+- Per-title try/except so one failure doesn't block others
+- catch_up_deliveries() runs in a finally block — always executes
+- Proper logging with timestamps (no bare print statements)
+- Global timeout prevents indefinite hangs
+"""
+
 import os
+import sys
 import asyncio
 import importlib
+import logging
+import tempfile
+import signal
+from datetime import datetime, date, timezone, timedelta
+from pathlib import Path
+from urllib.parse import quote
+
 from telegram import Bot
 from telegram.error import RetryAfter
 from dotenv import load_dotenv
@@ -13,15 +36,149 @@ from database.operations import (
     get_edition, add_title
 )
 from utils.helpers import get_today, format_date
-from datetime import datetime, date, timezone, timedelta
-from urllib.parse import quote
-from scrapers.downmagaz_net import scrape_magazine_tag, get_download_links, get_magazine_tag_and_version, matches_version
+from scrapers.downmagaz_net import (
+    scrape_magazine_tag, get_download_links,
+    get_magazine_tag_and_version, matches_version,
+)
+
+# ─── Logging ───────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    format="%(asctime)s | %(name)-20s | %(levelname)-7s | %(message)s",
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("scraper")
+
+# ─── Lock file to prevent overlapping runs ─────────────────────────────────
+
+LOCK_FILE = Path(tempfile.gettempdir()) / "newsstand_scraper.lock"
+GLOBAL_TIMEOUT_SECONDS = 600  # 10 minute hard cap on total runtime
+
+
+def acquire_lock() -> bool:
+    """Try to acquire a process-level lock. Returns False if another run is active."""
+    if LOCK_FILE.exists():
+        try:
+            pid = int(LOCK_FILE.read_text().strip())
+            # Check if process is still running
+            try:
+                os.kill(pid, 0)  # signal 0 = just check existence
+                # Process is still alive — bail out
+                lock_age = datetime.now() - datetime.fromtimestamp(LOCK_FILE.stat().st_mtime)
+                if lock_age.total_seconds() > GLOBAL_TIMEOUT_SECONDS:
+                    logger.warning("Lock file is stale (%s old). Removing and proceeding.", lock_age)
+                    LOCK_FILE.unlink(missing_ok=True)
+                else:
+                    logger.warning("Another scraper run (PID %d) is still active. Skipping this run.", pid)
+                    return False
+            except (OSError, ProcessLookupError):
+                # Process is dead — stale lock
+                logger.info("Stale lock file found (PID %d is dead). Removing.", pid)
+                LOCK_FILE.unlink(missing_ok=True)
+        except (ValueError, FileNotFoundError):
+            LOCK_FILE.unlink(missing_ok=True)
+
+    LOCK_FILE.write_text(str(os.getpid()))
+    return True
+
+
+def release_lock():
+    """Release the lock file."""
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+# ─── Shared delivery helper ───────────────────────────────────────────────
+
+async def send_edition_to_user(
+    bot: Bot,
+    user_id: int,
+    edition_id: int,
+    file_id: str,
+    title_name: str,
+    edition_date: date,
+    category: str = "Newspaper",
+) -> bool:
+    """Send a single edition (newspaper PDF or magazine links) to one user.
+    
+    Returns True on success, False on failure.
+    Handles multi-part PDFs, magazine download links, and rate limiting.
+    """
+    friendly_date = format_date(edition_date)
+    
+    try:
+        if category == "Magazine":
+            # Magazine: file_id contains comma-separated post URLs
+            post_urls = file_id.split(",")
+            for post_url in post_urls:
+                links = await get_download_links(post_url)
+                if links:
+                    links_html = ""
+                    for domain, href in links:
+                        links_html += f'• <a href="{href}">Download via {domain}</a>\n'
+                    msg_text = (
+                        f"📖 <b>New Magazine Alert!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"New edition of <b>{title_name}</b> is available for <b>{friendly_date}</b>:\n\n"
+                        f"Download Links:\n{links_html}"
+                    )
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=msg_text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+        else:
+            # Newspaper: file_id contains comma-separated Telegram file_ids
+            file_ids = file_id.split(",")
+            for idx, fid in enumerate(file_ids):
+                part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
+                await bot.send_document(
+                    chat_id=user_id,
+                    document=fid,
+                    caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                    parse_mode="Markdown",
+                )
+        
+        await log_delivery("", user_id, edition_id, "success")
+        return True
+        
+    except RetryAfter as e:
+        logger.warning("Rate limited delivering to %s. Sleeping %ss...", user_id, e.retry_after)
+        await asyncio.sleep(e.retry_after)
+        try:
+            # Retry once after rate limit
+            if category != "Magazine":
+                file_ids = file_id.split(",")
+                for idx, fid in enumerate(file_ids):
+                    part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
+                    await bot.send_document(
+                        chat_id=user_id,
+                        document=fid,
+                        caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
+                        parse_mode="Markdown",
+                    )
+            await log_delivery("", user_id, edition_id, "success")
+            return True
+        except Exception as ex:
+            logger.error("[%s] Retry failed for user %s: %s", title_name, user_id, ex)
+            
+    except Exception as e:
+        logger.error("[%s] Failed to deliver to %s: %s", title_name, user_id, e)
+
+    await log_delivery("", user_id, edition_id, "failed")
+    return False
+
+
+# ─── PDF splitting ─────────────────────────────────────────────────────────
 
 def split_pdf_if_large(filepath: str, max_size_mb: float = 45.0) -> list[str]:
     """Splits a PDF file into multiple files if its size exceeds max_size_mb.
     Returns a list of file paths. If the file is small or not a PDF, returns [filepath].
     """
-    import os
     if not filepath.endswith(".pdf") or not os.path.exists(filepath):
         return [filepath]
         
@@ -29,7 +186,7 @@ def split_pdf_if_large(filepath: str, max_size_mb: float = 45.0) -> list[str]:
     if file_size_mb <= max_size_mb:
         return [filepath]
         
-    print(f"File {filepath} is {file_size_mb:.2f} MB, which exceeds {max_size_mb} MB. Splitting...")
+    logger.info("File %s is %.2f MB, exceeds %.0f MB. Splitting...", filepath, file_size_mb, max_size_mb)
     try:
         from pypdf import PdfReader, PdfWriter
         
@@ -57,13 +214,16 @@ def split_pdf_if_large(filepath: str, max_size_mb: float = 45.0) -> list[str]:
                 writer.write(f)
                 
             part_size_mb = os.path.getsize(part_path) / (1024 * 1024)
-            print(f"Created part {i+1}: {part_path} ({part_size_mb:.2f} MB, pages {start_page+1}-{end_page})")
+            logger.info("Created part %d: %s (%.2f MB, pages %d-%d)", i+1, part_path, part_size_mb, start_page+1, end_page)
             parts.append(part_path)
             
         return parts
     except Exception as e:
-        print(f"Error splitting PDF: {e}")
+        logger.error("Error splitting PDF: %s", e)
         return [filepath]
+
+
+# ─── Magazine processing ──────────────────────────────────────────────────
 
 async def process_magazine_title(bot: Bot, title: dict, today: date):
     """Scrapes recent editions from downmagaz.net tag, extracts links,
@@ -76,15 +236,15 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
     tag_name, version = get_magazine_tag_and_version(name, slug)
     tag_url = f"https://downmagaz.net/tags/{quote(tag_name.lower())}/"
     
-    print(f"[{name}] Scraping tag page {tag_url}...")
+    logger.info("[%s] Scraping tag page %s...", name, tag_url)
     posts = await scrape_magazine_tag(tag_url)
     
     if not posts:
-        print(f"[{name}] No posts found on tag page.")
+        logger.info("[%s] No posts found on tag page.", name)
         await upsert_scrape_status("", title_id, today, status="failed", increment_attempts=True)
         return
         
-    print(f"[{name}] Found {len(posts)} posts on tag page.")
+    logger.info("[%s] Found %d posts on tag page.", name, len(posts))
     
     success_any = False
     
@@ -106,15 +266,14 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
         if post_url in processed_urls:
             continue
             
-        print(f"[{name}] Found post: {post_title} for edition date {edition_date}")
+        logger.info("[%s] Found post: %s for edition date %s", name, post_title, edition_date)
         
         # Only deliver to subscribers if the edition is new (published within last 3 days)
-        # Old historical editions are stored in the DB but not sent as alerts
         is_new_edition = edition_date >= today - timedelta(days=3)
         
         links = await get_download_links(post_url)
         if not links:
-            print(f"[{name}] No download links found for {post_title}. Skipping.")
+            logger.info("[%s] No download links found for %s. Skipping.", name, post_title)
             continue
             
         subscribers = await get_subscribers_for_title("", title_id)
@@ -122,7 +281,7 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
         if subscribers and is_new_edition:
             links_html = ""
             for domain, href in links:
-                links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                links_html += f'• <a href="{href}">Download via {domain}</a>\n'
                 
             msg_text = (
                 f"📖 <b>New Magazine Alert!</b>\n"
@@ -141,11 +300,11 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
                         disable_web_page_preview=True
                     )
                     delivered_users.append(user_id)
-                    print(f"[{name}] Delivered to {user_id}")
+                    logger.info("[%s] Delivered to %s", name, user_id)
                 except Exception as e:
-                    print(f"[{name}] Failed to deliver to {user_id}: {e}")
+                    logger.error("[%s] Failed to deliver to %s: %s", name, user_id, e)
         elif not is_new_edition:
-            print(f"[{name}] Skipping alert for old historical edition {post_title} (date: {edition_date}).")
+            logger.info("[%s] Skipping alert for old historical edition %s (date: %s).", name, post_title, edition_date)
                     
         # Update DB: mark this post_url as processed in edition
         edition_id = None
@@ -174,7 +333,7 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
             )
             edition_id = edition["id"]
             
-        # Log delivery status for subscribers (only if it was a new edition that we attempted to deliver)
+        # Log delivery status for subscribers (only if it was a new edition)
         if subscribers and is_new_edition:
             for user_id in subscribers:
                 status = "success" if user_id in delivered_users else "failed"
@@ -185,52 +344,21 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
     if success_any:
         await upsert_scrape_status("", title_id, today, status="found", increment_attempts=True)
     else:
-        # tag page parsed successfully but no new posts found
         await upsert_scrape_status("", title_id, today, status="pending", increment_attempts=False)
 
+
 async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, newspaper_date: date):
-    """Deliver the edition to all subscribed users."""
+    """Deliver the edition to all subscribed users using the shared helper."""
     subscribers = await get_subscribers_for_title("", title_id)
-    print(f"[{title_name}] Found {len(subscribers)} subscribers for delivery.")
-    
-    friendly_date = format_date(newspaper_date)
-    file_ids = file_id.split(",")
+    logger.info("[%s] Found %d subscribers for delivery.", title_name, len(subscribers))
     
     for user_id in subscribers:
         if await has_been_delivered("", user_id, edition_id):
             continue
-            
-        try:
-            for idx, fid in enumerate(file_ids):
-                part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
-                await bot.send_document(
-                    chat_id=user_id,
-                    document=fid,
-                    caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
-                    parse_mode="Markdown"
-                )
-            await log_delivery("", user_id, edition_id, "success")
-            print(f"[{title_name}] Delivered to {user_id}")
-        except RetryAfter as e:
-            print(f"Rate limited! Sleeping for {e.retry_after}s")
-            await asyncio.sleep(e.retry_after)
-            try:
-                for idx, fid in enumerate(file_ids):
-                    part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
-                    await bot.send_document(
-                        chat_id=user_id,
-                        document=fid,
-                        caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
-                        parse_mode="Markdown"
-                    )
-                await log_delivery("", user_id, edition_id, "success")
-            except Exception as ex:
-                print(f"[{title_name}] Retry failed: {ex}")
-        except Exception as e:
-            print(f"[{title_name}] Failed to deliver to {user_id}: {e}")
-            await log_delivery("", user_id, edition_id, "failed")
-            
-        await asyncio.sleep(0.1)
+        
+        await send_edition_to_user(bot, user_id, edition_id, file_id, title_name, newspaper_date)
+        await asyncio.sleep(0.1)  # Small delay to avoid rate limits
+
 
 async def catch_up_deliveries(bot: Bot, scrape_date: date):
     """Deliver today's editions to any subscribers who haven't received them yet."""
@@ -257,7 +385,7 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
                 "category": row["titles"]["category"] if row.get("titles") else "Newspaper"
             }
     
-    # 3. Check each subscription
+    # 3. Check each subscription and deliver if needed
     for sub in subs_resp.data:
         user_id = sub["user_id"]
         title_id = sub["title_id"]
@@ -265,82 +393,17 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
         if title_id in editions_map:
             ed = editions_map[title_id]
             edition_id = ed["edition_id"]
-            file_id = ed["file_id"]
-            title_name = ed["title_name"]
-            category = ed.get("category", "Newspaper")
             
-            # Check if already delivered
             if not await has_been_delivered("", user_id, edition_id):
-                friendly_date = format_date(scrape_date)
-                
-                if category == "Magazine":
-                    print(f"[Catch-up] Delivering magazine {title_name} to {user_id}...")
-                    # file_id contains the post_url(s)
-                    post_urls = file_id.split(",")
-                    success_all = True
-                    for post_url in post_urls:
-                        links = await get_download_links(post_url)
-                        if links:
-                            links_html = ""
-                            for domain, href in links:
-                                links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
-                            msg_text = (
-                                f"📖 <b>New Magazine Alert!</b>\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                f"New edition of <b>{title_name}</b> is available for <b>{friendly_date}</b>:\n\n"
-                                f"Download Links:\n{links_html}"
-                            )
-                            try:
-                                await bot.send_message(
-                                    chat_id=user_id,
-                                    text=msg_text,
-                                    parse_mode="HTML",
-                                    disable_web_page_preview=True
-                                )
-                            except Exception as e:
-                                print(f"[Catch-up] Failed to deliver magazine alert to {user_id}: {e}")
-                                success_all = False
-                        else:
-                            success_all = False
-                    if success_all:
-                        await log_delivery("", user_id, edition_id, "success")
-                        print(f"[Catch-up] Delivered magazine {title_name} to {user_id}")
-                    else:
-                        await log_delivery("", user_id, edition_id, "failed")
-                else:
-                    print(f"[Catch-up] Delivering {title_name} to {user_id}...")
-                    file_ids = file_id.split(",")
-                    try:
-                        for idx, fid in enumerate(file_ids):
-                            part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
-                            await bot.send_document(
-                                chat_id=user_id,
-                                document=fid,
-                                caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
-                                parse_mode="Markdown"
-                            )
-                        await log_delivery("", user_id, edition_id, "success")
-                        print(f"[Catch-up] Delivered to {user_id}")
-                    except RetryAfter as e:
-                        print(f"[Catch-up] Rate limited! Sleeping for {e.retry_after}s")
-                        await asyncio.sleep(e.retry_after)
-                        try:
-                            for idx, fid in enumerate(file_ids):
-                                part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
-                                await bot.send_document(
-                                    chat_id=user_id,
-                                    document=fid,
-                                    caption=f"📰 Here is your **{title_name}**{part_suffix} for {friendly_date}!",
-                                    parse_mode="Markdown"
-                                )
-                            await log_delivery("", user_id, edition_id, "success")
-                        except Exception as ex:
-                            print(f"[Catch-up] Retry failed: {ex}")
-                    except Exception as e:
-                        print(f"[Catch-up] Failed to deliver: {e}")
-                        await log_delivery("", user_id, edition_id, "failed")
-                
+                logger.info("[Catch-up] Delivering %s to %s...", ed["title_name"], user_id)
+                await send_edition_to_user(
+                    bot, user_id, edition_id, ed["file_id"],
+                    ed["title_name"], scrape_date, ed.get("category", "Newspaper"),
+                )
                 await asyncio.sleep(0.2)
+
+
+# ─── Main entry point ─────────────────────────────────────────────────────
 
 async def main():
     load_dotenv()
@@ -348,237 +411,244 @@ async def main():
     channel_id = os.getenv("STORAGE_CHANNEL_ID")
     
     if not bot_token or not channel_id:
-        print("Missing BOT_TOKEN or STORAGE_CHANNEL_ID in .env")
+        logger.error("Missing BOT_TOKEN or STORAGE_CHANNEL_ID in .env")
         return
 
-    config = Config.get()
-    today = get_today()
-    bot = Bot(token=bot_token)
-    
-    import sys
-    target_slug = sys.argv[1] if len(sys.argv) > 1 else None
-    
-    if target_slug:
-        print(f"Scraping specific title slug: {target_slug}")
-        db = await _get_client()
-        resp = await db.table("titles").select("*").eq("slug", target_slug).execute()
-        pending_titles = resp.data if resp.data else []
-    else:
-        print(f"Scraping all active titles for today: {today}")
-        pending_titles = await get_pending_scrapes("", scrape_date=today, max_attempts=7)
-    
-    if not pending_titles:
-        print("No pending titles to scrape. Exiting.")
+    # Acquire lock to prevent overlapping runs
+    if not acquire_lock():
         return
-        
-    print(f"Found {len(pending_titles)} titles pending scrape.")
     
-    # Filter titles based on category and current hour in IST (UTC+5:30)
-    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-    current_hour = ist_now.hour
-    
-    # If GITHUB_EVENT_NAME is not set (local run) or is 'workflow_dispatch' (manual run), bypass hour filters
-    github_event = os.getenv("GITHUB_EVENT_NAME")
-    is_manual = (github_event is None) or (github_event == "workflow_dispatch")
-    if is_manual:
-        print("Manual or local run detected. Bypassing scheduling hour filters.")
+    try:
+        config = Config.get()
+        today = get_today()
+        bot = Bot(token=bot_token)
         
-    filtered_titles = []
-    for title in pending_titles:
-        category = title.get("category", "Newspaper")
-        if is_manual:
-            filtered_titles.append(title)
-        elif category == "Newspaper":
-            if current_hour >= 6:
-                filtered_titles.append(title)
-            else:
-                print(f"[{title['name']}] Skipped: Newspaper checks only run after 6am IST (current hour: {current_hour} IST).")
-        elif category == "Magazine":
-            filtered_titles.append(title)
+        target_slug = sys.argv[1] if len(sys.argv) > 1 else None
+        
+        if target_slug:
+            logger.info("Scraping specific title slug: %s", target_slug)
+            db = await _get_client()
+            resp = await db.table("titles").select("*").eq("slug", target_slug).execute()
+            pending_titles = resp.data if resp.data else []
         else:
-            filtered_titles.append(title)
+            logger.info("Scraping all active titles for today: %s", today)
+            pending_titles = await get_pending_scrapes("", scrape_date=today, max_attempts=7)
+        
+        if not pending_titles:
+            logger.info("No pending titles to scrape. Exiting.")
+            return
             
-    if not filtered_titles:
-        print(f"No titles to scrape for the current hour ({current_hour} IST). Exiting.")
-        return
+        logger.info("Found %d titles pending scrape.", len(pending_titles))
         
-    print(f"Found {len(filtered_titles)} titles to scrape in this run.")
-    
-    # 2. Iterate and scrape using the dynamic source module
-    for title in filtered_titles:
-        name = title["name"]
-        slug = title["slug"]
+        # Filter titles based on category and current hour in IST
+        ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        current_hour = ist_now.hour
         
-        category = title.get("category", "Newspaper")
-        if category == "Magazine":
-            try:
-                await process_magazine_title(bot, title, today)
-            except Exception as e:
-                print(f"[{name}] Error processing magazine: {e}")
-            continue
-        
-        # Check if already scraped and uploaded today to prevent duplicate channel uploads
-        existing_edition = await get_edition("", title["id"], today)
-        if existing_edition and existing_edition.get("file_id") and existing_edition.get("status") == "delivered":
-            print(f"[{name}] Already scraped and uploaded to channel today. Skipping upload.")
-            await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
-            await deliver_to_subscribers(bot, existing_edition["id"], existing_edition["file_id"], title["id"], name, today)
-            continue
+        # If GITHUB_EVENT_NAME is not set (local run) or is 'workflow_dispatch' (manual), bypass hour filters
+        github_event = os.getenv("GITHUB_EVENT_NAME")
+        is_manual = (github_event is None) or (github_event == "workflow_dispatch")
+        if is_manual:
+            logger.info("Manual or local run detected. Bypassing scheduling hour filters.")
             
-        source_module_name = title.get("source")
-        
-        # We also need the source_url from the config.yaml to pass to the scraper
-        conf_title = next((t for t in config.titles if getattr(t, "slug", "") == slug), None)
-        source_url = getattr(conf_title, "source_url", None) if conf_title else None
-        
-        if not source_module_name or not source_url:
-            print(f"[{name}] Skipped: No source module or source URL defined.")
-            continue
-            
-        # Dynamically import the scraper module
-        try:
-            scraper_module = importlib.import_module(f"scrapers.{source_module_name}")
-        except ImportError:
-            print(f"[{name}] Failed: Scraper module 'scrapers.{source_module_name}' not found.")
-            continue
-            
-        # Run the generic scrape() function
-        result = await scraper_module.scrape(source_url, slug, name)
-        
-        if not result:
-            # Failed to scrape, record the attempt
-            await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
-            continue
-            
-        output_file, newspaper_date = result
-        
-        if not output_file or not os.path.exists(output_file):
-            await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
-            continue
-
-        # Check if this edition_date already exists in DB to prevent duplicate uploads
-        existing_edition = await get_edition("", title["id"], newspaper_date)
-        if existing_edition and existing_edition.get("file_id") and existing_edition.get("status") == "delivered":
-            print(f"[{name}] Edition for {newspaper_date} already exists and is delivered. Skipping upload.")
-            try:
-                if os.path.exists(output_file):
-                    os.remove(output_file)
-            except Exception as e:
-                print(f"Failed to remove output file: {e}")
-            
-            # If the edition is today's, or today is Sunday (weekday == 6) and we fell back to Saturday
-            if newspaper_date == today or today.weekday() == 6:
-                await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
+        filtered_titles = []
+        for title in pending_titles:
+            category = title.get("category", "Newspaper")
+            if is_manual:
+                filtered_titles.append(title)
+            elif category == "Newspaper":
+                if current_hour >= 6:
+                    filtered_titles.append(title)
+                else:
+                    logger.info("[%s] Skipped: Newspaper checks only after 6am IST (current: %d IST).", title['name'], current_hour)
+            else:
+                filtered_titles.append(title)
                 
-            await deliver_to_subscribers(bot, existing_edition["id"], existing_edition["file_id"], title["id"], name, newspaper_date)
-            continue
-
-        # 3. Upload to Telegram Storage Channel
-        friendly_date = format_date(newspaper_date)
-        print(f"[{name}] Uploading to Telegram Channel...")
-        file_parts = []
-        try:
-            # Split PDF if it is large (> 45 MB)
-            file_parts = split_pdf_if_large(output_file, max_size_mb=45.0)
+        if not filtered_titles:
+            logger.info("No titles to scrape for current hour (%d IST). Exiting.", current_hour)
+            return
             
-            telegram_file_ids = []
-            message_ids = []
+        logger.info("Processing %d titles in this run.", len(filtered_titles))
+        
+        # ── Scrape each title (with per-title error isolation) ──
+        for title in filtered_titles:
+            name = title["name"]
+            slug = title["slug"]
             
-            for idx, part_file in enumerate(file_parts):
-                part_suffix = f" (Part {idx+1}/{len(file_parts)})" if len(file_parts) > 1 else ""
+            try:
+                category = title.get("category", "Newspaper")
+                if category == "Magazine":
+                    await process_magazine_title(bot, title, today)
+                    continue
                 
-                message = None
-                for attempt in range(3):
-                    try:
-                        with open(part_file, 'rb') as f:
-                            message = await bot.send_document(
-                                chat_id=channel_id,
-                                document=f,
-                                caption=f"📰 **{name}**{part_suffix} • {friendly_date}",
-                                parse_mode="Markdown",
-                                read_timeout=300,
-                                write_timeout=300,
-                                connect_timeout=60,
-                                pool_timeout=60
-                            )
-                        break
-                    except Exception as upload_err:
-                        print(f"[{name}] Upload attempt {attempt+1} failed: {upload_err}")
-                        if attempt < 2:
-                            await asyncio.sleep(5)
-                        else:
-                            raise upload_err
-                            
-                if not message:
-                    raise RuntimeError("Failed to upload file to Telegram after 3 attempts.")
+                # Check if already scraped and uploaded today
+                existing_edition = await get_edition("", title["id"], today)
+                if existing_edition and existing_edition.get("file_id") and existing_edition.get("status") == "delivered":
+                    logger.info("[%s] Already scraped and uploaded today. Delivering to subscribers.", name)
+                    await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
+                    await deliver_to_subscribers(bot, existing_edition["id"], existing_edition["file_id"], title["id"], name, today)
+                    continue
                     
-                telegram_file_ids.append(message.document.file_id)
-                message_ids.append(str(message.message_id))
-            
-            combined_file_id = ",".join(telegram_file_ids)
-            combined_message_id = ",".join(message_ids)
-            
-            # 4. Update Database
-            edition_id = await add_edition(
-                db_path="",
-                title_id=title["id"],
-                edition_date=newspaper_date,
-                download_url=source_url,
-                status="stored"
-            )
-            
-            first_message_id = int(message_ids[0]) if message_ids else None
-            
-            await update_edition_status(
-                db_path="",
-                edition_id=edition_id,
-                status="delivered", 
-                file_id=combined_file_id,
-                message_id=first_message_id
-            )
-            
-            # Mark today's scrape as successfully found if it's today's edition or today is Sunday
-            if newspaper_date == today or today.weekday() == 6:
-                await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=True)
-            
-            print(f"[{name}] Success! Database updated.")
-            
-            # 5. Deliver to Users
-            await deliver_to_subscribers(bot, edition_id, combined_file_id, title["id"], name, newspaper_date)
-            
-        except Exception as e:
-            print(f"[{name}] Error during upload/delivery: {e}")
-            
-        finally:
-            # Clean up all created files
-            for part_file in file_parts:
+                source_module_name = title.get("source")
+                
+                # Get source_url from config.yaml
+                conf_title = next((t for t in config.titles if getattr(t, "slug", "") == slug), None)
+                source_url = getattr(conf_title, "source_url", None) if conf_title else None
+                
+                if not source_module_name or not source_url:
+                    logger.info("[%s] Skipped: No source module or source URL defined.", name)
+                    continue
+                    
+                # Dynamically import the scraper module
                 try:
-                    if os.path.exists(part_file):
-                        os.remove(part_file)
+                    scraper_module = importlib.import_module(f"scrapers.{source_module_name}")
+                except ImportError:
+                    logger.error("[%s] Failed: Scraper module 'scrapers.%s' not found.", name, source_module_name)
+                    continue
+                    
+                # Run the scraper
+                result = await scraper_module.scrape(source_url, slug, name)
+                
+                if not result:
+                    await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
+                    continue
+                    
+                output_file, newspaper_date = result
+                
+                if not output_file or not os.path.exists(output_file):
+                    await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
+                    continue
+
+                # Check if this edition_date already exists
+                existing_edition = await get_edition("", title["id"], newspaper_date)
+                if existing_edition and existing_edition.get("file_id") and existing_edition.get("status") == "delivered":
+                    logger.info("[%s] Edition for %s already delivered. Skipping upload.", name, newspaper_date)
+                    try:
+                        if os.path.exists(output_file):
+                            os.remove(output_file)
+                    except Exception as e:
+                        logger.warning("Failed to remove output file: %s", e)
+                    
+                    if newspaper_date == today or today.weekday() == 6:
+                        await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
+                        
+                    await deliver_to_subscribers(bot, existing_edition["id"], existing_edition["file_id"], title["id"], name, newspaper_date)
+                    continue
+
+                # Upload to Telegram Storage Channel
+                friendly_date = format_date(newspaper_date)
+                logger.info("[%s] Uploading to Telegram Channel...", name)
+                file_parts = []
+                try:
+                    file_parts = split_pdf_if_large(output_file, max_size_mb=45.0)
+                    
+                    telegram_file_ids = []
+                    message_ids = []
+                    
+                    for idx, part_file in enumerate(file_parts):
+                        part_suffix = f" (Part {idx+1}/{len(file_parts)})" if len(file_parts) > 1 else ""
+                        
+                        message = None
+                        for attempt in range(3):
+                            try:
+                                with open(part_file, 'rb') as f:
+                                    message = await bot.send_document(
+                                        chat_id=channel_id,
+                                        document=f,
+                                        caption=f"📰 **{name}**{part_suffix} • {friendly_date}",
+                                        parse_mode="Markdown",
+                                        read_timeout=300,
+                                        write_timeout=300,
+                                        connect_timeout=60,
+                                        pool_timeout=60
+                                    )
+                                break
+                            except Exception as upload_err:
+                                logger.error("[%s] Upload attempt %d failed: %s", name, attempt+1, upload_err)
+                                if attempt < 2:
+                                    await asyncio.sleep(5)
+                                else:
+                                    raise upload_err
+                                    
+                        if not message:
+                            raise RuntimeError("Failed to upload file to Telegram after 3 attempts.")
+                            
+                        telegram_file_ids.append(message.document.file_id)
+                        message_ids.append(str(message.message_id))
+                    
+                    combined_file_id = ",".join(telegram_file_ids)
+                    combined_message_id = ",".join(message_ids)
+                    
+                    # Update Database
+                    edition_id = await add_edition(
+                        db_path="",
+                        title_id=title["id"],
+                        edition_date=newspaper_date,
+                        download_url=source_url,
+                        status="stored"
+                    )
+                    
+                    first_message_id = int(message_ids[0]) if message_ids else None
+                    
+                    await update_edition_status(
+                        db_path="",
+                        edition_id=edition_id,
+                        status="delivered", 
+                        file_id=combined_file_id,
+                        message_id=first_message_id
+                    )
+                    
+                    if newspaper_date == today or today.weekday() == 6:
+                        await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=True)
+                    
+                    logger.info("[%s] Success! Database updated.", name)
+                    
+                    # Deliver to subscribers
+                    await deliver_to_subscribers(bot, edition_id, combined_file_id, title["id"], name, newspaper_date)
+                    
                 except Exception as e:
-                    print(f"Failed to remove part file {part_file}: {e}")
-            try:
-                if os.path.exists(output_file):
-                    os.remove(output_file)
+                    logger.error("[%s] Error during upload/delivery: %s", name, e)
+                    
+                finally:
+                    # Clean up all created files
+                    for part_file in file_parts:
+                        try:
+                            if os.path.exists(part_file):
+                                os.remove(part_file)
+                        except Exception as e:
+                            logger.warning("Failed to remove part file %s: %s", part_file, e)
+                    try:
+                        if os.path.exists(output_file):
+                            os.remove(output_file)
+                    except Exception as e:
+                        logger.warning("Failed to remove output file %s: %s", output_file, e)
+                        
             except Exception as e:
-                print(f"Failed to remove output file {output_file}: {e}")
+                # Per-title error isolation — log and continue to next title
+                logger.exception("[%s] Unhandled error during scrape. Continuing to next title.", name)
+                continue
 
-    # 5.5 Catch-up deliveries for any missed subscriptions
-    await catch_up_deliveries(bot, today)
+        # ── Catch-up deliveries (ALWAYS runs, even if some titles failed above) ──
+        logger.info("Running catch-up deliveries...")
+        await catch_up_deliveries(bot, today)
 
-    # 6. Send Failure Report at 12pm IST (noon)
-    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-    if ist_now.hour == 12:
-        failed_titles = await get_failed_scrapes("", today)
-        if failed_titles:
-            report = "⚠️ *Daily Scrape Failure Report*\n\nThe following newspapers could not be found today after 7 attempts:\n"
-            for t in failed_titles:
-                report += f"• {t}\n"
-            try:
-                await bot.send_message(chat_id=channel_id, text=report, parse_mode="Markdown")
-                print("Failure report sent to channel.")
-            except Exception as e:
-                print(f"Failed to send report: {e}")
+        # ── Failure report at 12pm IST ──
+        ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        if ist_now.hour == 12:
+            failed_titles = await get_failed_scrapes("", today)
+            if failed_titles:
+                report = "⚠️ *Daily Scrape Failure Report*\n\nThe following newspapers could not be found today after 7 attempts:\n"
+                for t in failed_titles:
+                    report += f"• {t}\n"
+                try:
+                    await bot.send_message(chat_id=channel_id, text=report, parse_mode="Markdown")
+                    logger.info("Failure report sent to channel.")
+                except Exception as e:
+                    logger.error("Failed to send report: %s", e)
+
+    finally:
+        release_lock()
+        logger.info("Scraper run complete. Lock released.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,12 +1,15 @@
 import os
 import re
 import asyncio
+import logging
 import urllib.request
 import httpx
 import gdown
 from bs4 import BeautifulSoup
 from datetime import date
 from utils.helpers import get_today
+
+logger = logging.getLogger(__name__)
 
 async def download_from_gdrive(file_id: str, output_file: str, name: str) -> bool:
     """Downloads a file from Google Drive using direct HTTP GET with confirmation bypass,
@@ -17,7 +20,7 @@ async def download_from_gdrive(file_id: str, output_file: str, name: str) -> boo
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     }
     
-    print(f"[{name}] Attempting direct HTTP download from Google Drive...")
+    logger.info("[%s] Attempting direct HTTP download from Google Drive...", name)
     try:
         async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=120.0) as client:
             resp = await client.get(url, params={"id": file_id})
@@ -30,20 +33,20 @@ async def download_from_gdrive(file_id: str, output_file: str, name: str) -> boo
                     break
                     
             if token:
-                print(f"[{name}] Large file warning received. Confirming download...")
+                logger.info("[%s] Large file warning received. Confirming download...", name)
                 resp = await client.get(url, params={"id": file_id, "confirm": token})
                 
             if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
                 with open(output_file, "wb") as f:
                     f.write(resp.content)
-                print(f"[{name}] Direct HTTP download succeeded ({len(resp.content)} bytes).")
+                logger.info("[%s] Direct HTTP download succeeded (%d bytes).", name, len(resp.content))
                 return True
             else:
-                print(f"[{name}] Direct download did not return a valid PDF (status: {resp.status_code}).")
+                logger.info("[%s] Direct download did not return a valid PDF (status: %d).", name, resp.status_code)
     except Exception as e:
-        print(f"[{name}] Direct HTTP download failed: {e}")
+        logger.warning("[%s] Direct HTTP download failed: %s", name, e)
         
-    print(f"[{name}] Falling back to gdown download...")
+    logger.info("[%s] Falling back to gdown download...", name)
     try:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: gdown.download(id=file_id, output=output_file, quiet=True))
@@ -51,10 +54,10 @@ async def download_from_gdrive(file_id: str, output_file: str, name: str) -> boo
             with open(output_file, "rb") as f:
                 magic = f.read(4)
             if magic == b"%PDF":
-                print(f"[{name}] gdown fallback download succeeded.")
+                logger.info("[%s] gdown fallback download succeeded.", name)
                 return True
     except Exception as e:
-        print(f"[{name}] gdown fallback download failed: {e}")
+        logger.warning("[%s] gdown fallback download failed: %s", name, e)
         
     return False
 
@@ -63,7 +66,7 @@ async def scrape(source_url: str, slug: str, name: str, target_date: date = None
     Scrapes the dailyepaper.in website for a given newspaper.
     Returns the absolute path to the downloaded PDF and its date, or None if failed.
     """
-    print(f"[{name}] Fetching {source_url}...")
+    logger.info("[%s] Fetching %s...", name, source_url)
     
     try:
         req = urllib.request.Request(
@@ -144,7 +147,7 @@ async def scrape(source_url: str, slug: str, name: str, target_date: date = None
                 break
                 
         if not target_drive_url:
-            print(f"[{name}] Failed: No edition found for any of the dates: {[d.strftime('%Y-%m-%d') for d in dates_to_try]}")
+            logger.info("[%s] Failed: No edition found for any of the dates: %s", name, [d.strftime('%Y-%m-%d') for d in dates_to_try])
             return None
             
         match = re.search(r'/d/([a-zA-Z0-9_-]+)', target_drive_url)
@@ -156,11 +159,11 @@ async def scrape(source_url: str, slug: str, name: str, target_date: date = None
         output_file = f"{slug}_{newspaper_date}.pdf"
         
         if not await download_from_gdrive(file_id, output_file, name):
-            print(f"[{name}] Failed to download PDF from Google Drive")
+            logger.warning("[%s] Failed to download PDF from Google Drive", name)
             return None
             
         return os.path.abspath(output_file), newspaper_date
         
     except Exception as e:
-        print(f"[{name}] Error: {e}")
+        logger.error("[%s] Error: %s", name, e)
         return None

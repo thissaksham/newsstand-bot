@@ -207,7 +207,8 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                 script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "run_scrapers.py")
                 script_path = os.path.abspath(script_path)
                 
-                async def run_bg_proc(p_exe, s_path, t_slug):
+                async def run_bg_proc(p_exe, s_path, t_slug, t_id, u_id, u_db_path, t_category, t_name, t_bot):
+                    """Background scraper task. All variables passed explicitly to avoid closure bugs."""
                     try:
                         proc = await asyncio.create_subprocess_exec(
                             p_exe, s_path, t_slug,
@@ -215,12 +216,12 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                             stderr=asyncio.subprocess.PIPE
                         )
                         stdout, stderr = await proc.communicate()
-                        print(f"[BG Scrape {t_slug}] Finished. Exit code: {proc.returncode}")
+                        logger.info("[BG Scrape %s] Finished. Exit code: %s", t_slug, proc.returncode)
                         if proc.returncode == 0:
                             db = await _get_client()
                             editions_resp = await db.table("editions")\
                                 .select("*")\
-                                .eq("title_id", tid)\
+                                .eq("title_id", t_id)\
                                 .eq("status", "delivered")\
                                 .order("date", desc=True)\
                                 .limit(1)\
@@ -232,9 +233,9 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                                 edition_date = datetime.date.fromisoformat(latest_edition["date"])
                                 file_id = latest_edition.get("file_id")
                                 
-                                if not await has_been_delivered(db_path, user_id, edition_id):
+                                if not await has_been_delivered(u_db_path, u_id, edition_id):
                                     friendly_date = format_date(edition_date)
-                                    if category == "Magazine":
+                                    if t_category == "Magazine":
                                         from scrapers.downmagaz_net import get_download_links
                                         post_urls = file_id.split(",")
                                         links = []
@@ -243,35 +244,43 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                                         if links:
                                             links_html = ""
                                             for domain, href in links:
-                                                links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
+                                                links_html += f'• <a href="{href}">Download via {domain}</a>\n'
                                             msg_text = (
                                                 f"📖 <b>Latest Available Edition ({friendly_date}):</b>\n"
                                                 f"{links_html}"
                                             )
-                                            await bot.send_message(
-                                                chat_id=user_id,
+                                            await t_bot.send_message(
+                                                chat_id=u_id,
                                                 text=msg_text,
                                                 parse_mode="HTML",
                                                 disable_web_page_preview=True
                                             )
-                                        await log_delivery(db_path, user_id, edition_id, "success")
+                                        await log_delivery(u_db_path, u_id, edition_id, "success")
                                     else:
                                         file_ids = file_id.split(",")
                                         for idx, fid in enumerate(file_ids):
                                             part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
-                                            await bot.send_document(
-                                                chat_id=user_id,
+                                            await t_bot.send_document(
+                                                chat_id=u_id,
                                                 document=fid,
-                                                caption=f"📰 Here is the latest available edition of **{title_name}**{part_suffix} for {friendly_date}!",
+                                                caption=f"📰 Here is the latest available edition of **{t_name}**{part_suffix} for {friendly_date}!",
                                                 parse_mode="Markdown"
                                             )
-                                        await log_delivery(db_path, user_id, edition_id, "success")
+                                        await log_delivery(u_db_path, u_id, edition_id, "success")
                         else:
-                            print(f"[BG Scrape {t_slug}] Stderr: {stderr.decode()}")
+                            logger.warning("[BG Scrape %s] Stderr: %s", t_slug, stderr.decode())
                     except Exception as ex:
-                        print(f"[BG Scrape {t_slug}] Process launch failed: {ex}")
+                        logger.error("[BG Scrape %s] Process launch failed: %s", t_slug, ex)
                         
-                asyncio.create_task(run_bg_proc(python_exe, script_path, slug))
+                task = asyncio.create_task(run_bg_proc(
+                    python_exe, script_path, slug,
+                    tid, user_id, db_path, category, title_name, bot
+                ))
+                # Store reference to prevent garbage collection
+                if "_bg_scrape_tasks" not in (context_user_data := {}):
+                    context_user_data["_bg_scrape_tasks"] = []
+                context_user_data["_bg_scrape_tasks"].append(task)
+
                 
     except Exception as e:
         logger.error(f"Error in deliver_latest_editions_on_subscribe: {e}")

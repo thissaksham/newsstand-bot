@@ -4,6 +4,7 @@ Database CRUD operations using the Supabase API Client.
 
 from __future__ import annotations
 
+import functools
 import logging
 from datetime import date, datetime, timezone
 from typing import Any, Optional
@@ -17,6 +18,14 @@ logger = logging.getLogger(__name__)
 # Cache the client instance
 _client: Optional[AsyncClient] = None
 
+
+def _reset_client() -> None:
+    """Discard the cached Supabase client so the next call creates a fresh one."""
+    global _client
+    _client = None
+    logger.info("Supabase client reset — will reconnect on next DB call.")
+
+
 async def _get_client() -> AsyncClient:
     global _client
     if _client is None:
@@ -28,10 +37,38 @@ async def _get_client() -> AsyncClient:
     return _client
 
 
+def _retry_on_client_error(func):
+    """Decorator that retries an async DB function once if the Supabase client
+    encounters an auth, connection, or transport error. This handles token expiry
+    and stale connections that accumulate when the bot runs for days."""
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            err_str = str(e).lower()
+            # Detect auth expiry, connection resets, and transport errors
+            is_retriable = any(keyword in err_str for keyword in (
+                "jwt", "token", "expired", "unauthorized", "401",
+                "connection", "timeout", "closed", "reset",
+                "transport", "httpx",
+            ))
+            if is_retriable:
+                logger.warning(
+                    "Supabase client error in %s, resetting client and retrying: %s",
+                    func.__name__, e,
+                )
+                _reset_client()
+                return await func(*args, **kwargs)
+            raise
+    return wrapper
+
+
 # =====================================================================
 # Users
 # =====================================================================
 
+@_retry_on_client_error
 async def register_user(
     db_path: str, # unused, kept for API compatibility
     user_id: int,
@@ -51,6 +88,7 @@ async def register_user(
     await db.table("users").upsert(data).execute()
 
 
+@_retry_on_client_error
 async def get_user(db_path: str, user_id: int) -> Optional[dict[str, Any]]:
     db = await _get_client()
     resp = await db.table("users").select("*").eq("user_id", user_id).execute()
@@ -99,6 +137,7 @@ async def add_title(
     return resp.data[0]["id"]
 
 
+@_retry_on_client_error
 async def get_all_titles(db_path: str, active_only: bool = True) -> list[dict[str, Any]]:
     db = await _get_client()
     query = db.table("titles").select("*")
@@ -155,6 +194,7 @@ async def add_edition(
     return resp.data[0]["id"]
 
 
+@_retry_on_client_error
 async def get_edition(db_path: str, title_id: int, edition_date: date) -> Optional[dict[str, Any]]:
     db = await _get_client()
     resp = await db.table("editions").select("*").eq("title_id", title_id).eq("date", edition_date.isoformat()).execute()
@@ -188,15 +228,20 @@ async def get_recent_editions(db_path: str, title_id: int, limit: int = 30) -> l
 # Subscriptions
 # =====================================================================
 
+@_retry_on_client_error
 async def subscribe(db_path: str, user_id: int, title_id: int) -> bool:
     """Return True if inserted, False if already subscribed."""
     db = await _get_client()
     try:
         await db.table("subscriptions").insert({"user_id": user_id, "title_id": title_id}).execute()
         return True
-    except Exception:
-        # Conflict usually raises an exception in PostgREST
-        return False
+    except Exception as e:
+        err_str = str(e).lower()
+        # Only swallow actual duplicate-key / conflict errors
+        if "duplicate" in err_str or "conflict" in err_str or "unique" in err_str or "23505" in err_str:
+            return False
+        logger.error("Unexpected error in subscribe(user=%s, title=%s): %s", user_id, title_id, e)
+        raise
 
 
 async def unsubscribe(db_path: str, user_id: int, title_id: int) -> bool:
@@ -205,6 +250,7 @@ async def unsubscribe(db_path: str, user_id: int, title_id: int) -> bool:
     return len(resp.data) > 0
 
 
+@_retry_on_client_error
 async def get_user_subscriptions(db_path: str, user_id: int) -> list[dict[str, Any]]:
     """Returns joined data: subscriptions + titles."""
     db = await _get_client()
@@ -226,6 +272,7 @@ async def get_user_subscriptions(db_path: str, user_id: int) -> list[dict[str, A
     return subs
 
 
+@_retry_on_client_error
 async def get_subscribers_for_title(db_path: str, title_id: int) -> list[int]:
     db = await _get_client()
     resp = await db.table("subscriptions").select("user_id").eq("title_id", title_id).execute()
@@ -238,6 +285,7 @@ async def get_subscribers_for_title(db_path: str, title_id: int) -> list[int]:
 # Delivery Log
 # =====================================================================
 
+@_retry_on_client_error
 async def log_delivery(db_path: str, user_id: int, edition_id: int, status: str = "success") -> None:
     db = await _get_client()
     await db.table("delivery_log").insert({
@@ -247,6 +295,7 @@ async def log_delivery(db_path: str, user_id: int, edition_id: int, status: str 
     }).execute()
 
 
+@_retry_on_client_error
 async def has_been_delivered(db_path: str, user_id: int, edition_id: int) -> bool:
     db = await _get_client()
     resp = await db.table("delivery_log").select("id").eq("user_id", user_id).eq("edition_id", edition_id).eq("status", "success").execute()
@@ -292,6 +341,7 @@ async def upsert_scrape_status(
     ).execute()
 
 
+@_retry_on_client_error
 async def get_pending_scrapes(db_path: str, scrape_date: date, max_attempts: int = 3) -> list[dict[str, Any]]:
     db = await _get_client()
     
@@ -329,6 +379,7 @@ async def get_titles_with_editions(db_path: str) -> list[int]:
 
 
 
+@_retry_on_client_error
 async def sync_titles_from_config(db_path: str, titles: list) -> None:
     db = await _get_client()
     config_slugs = []

@@ -41,8 +41,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not query or not query.data:
         return
 
-    await query.answer()  # acknowledge the press immediately
-
     data: str = query.data
 
     for prefix, handler_fn in _ROUTES:
