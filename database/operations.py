@@ -356,8 +356,12 @@ async def sync_titles_from_config(db_path: str, titles: list) -> None:
 
 async def get_failed_scrapes(db_path: str, scrape_date: date) -> list[str]:
     db = await _get_client()
-    resp = await db.table('daily_scrape_status').select('titles(name)').eq('date', scrape_date.isoformat()).eq('status', 'failed').execute()
-    return sorted([row['titles']['name'] for row in resp.data if row.get('titles')])
+    resp = await db.table('daily_scrape_status')\
+        .select('attempts, titles(name)')\
+        .eq('date', scrape_date.isoformat())\
+        .eq('status', 'failed')\
+        .execute()
+    return sorted([row['titles']['name'] for row in resp.data if row.get('titles') and row.get('attempts', 0) >= 7])
 
 
 
