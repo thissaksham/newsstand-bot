@@ -268,8 +268,12 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
             
         logger.info("[%s] Found post: %s for edition date %s", name, post_title, edition_date)
         
-        # Only deliver to subscribers if the edition is new (published within last 3 days)
-        is_new_edition = edition_date >= today - timedelta(days=3)
+        # Magazines have edition dates like "June 2026" -> 2026-06-01, which
+        # can be many days before today. Use same-month check for magazines
+        # instead of the 3-day window used for newspapers.
+        is_new_edition = (
+            edition_date.year == today.year and edition_date.month == today.month
+        ) or edition_date >= today - timedelta(days=3)
         
         links = await get_download_links(post_url)
         if not links:
@@ -369,21 +373,29 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
     if not subs_resp.data:
         return
         
-    # 2. Get all editions for today
-    editions_resp = await db.table("editions").select("id, title_id, file_id, titles(name, category)").eq("date", scrape_date.isoformat()).execute()
+    # 2. Get editions for today AND recent dates (magazines use month-start dates
+    #    like 2026-06-01 for "June 2026", so we need to look back further)
+    week_ago = (scrape_date - timedelta(days=31)).isoformat()
+    editions_resp = await db.table("editions").select(
+        "id, title_id, date, file_id, titles(name, category)"
+    ).gte("date", week_ago).lte("date", scrape_date.isoformat()).execute()
     if not editions_resp.data:
         return
         
-    # Map title_id to edition info
+    # Map title_id to the most recent edition (prefer later dates)
     editions_map = {}
     for row in editions_resp.data:
         if row.get("file_id"):
-            editions_map[row["title_id"]] = {
-                "edition_id": row["id"],
-                "file_id": row["file_id"],
-                "title_name": row["titles"]["name"] if row.get("titles") else f"Title #{row['title_id']}",
-                "category": row["titles"]["category"] if row.get("titles") else "Newspaper"
-            }
+            tid = row["title_id"]
+            # Keep the latest edition per title
+            if tid not in editions_map or row["date"] > editions_map[tid]["date"]:
+                editions_map[tid] = {
+                    "edition_id": row["id"],
+                    "file_id": row["file_id"],
+                    "date": row["date"],
+                    "title_name": row["titles"]["name"] if row.get("titles") else f"Title #{tid}",
+                    "category": row["titles"]["category"] if row.get("titles") else "Newspaper"
+                }
     
     # 3. Check each subscription and deliver if needed
     for sub in subs_resp.data:
@@ -396,9 +408,10 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
             
             if not await has_been_delivered("", user_id, edition_id):
                 logger.info("[Catch-up] Delivering %s to %s...", ed["title_name"], user_id)
+                edition_date = date.fromisoformat(ed["date"]) if isinstance(ed["date"], str) else ed["date"]
                 await send_edition_to_user(
                     bot, user_id, edition_id, ed["file_id"],
-                    ed["title_name"], scrape_date, ed.get("category", "Newspaper"),
+                    ed["title_name"], edition_date, ed.get("category", "Newspaper"),
                 )
                 await asyncio.sleep(0.2)
 
