@@ -486,17 +486,32 @@ async def main():
             
             for idx, part_file in enumerate(file_parts):
                 part_suffix = f" (Part {idx+1}/{len(file_parts)})" if len(file_parts) > 1 else ""
-                with open(part_file, 'rb') as f:
-                    message = await bot.send_document(
-                        chat_id=channel_id,
-                        document=f,
-                        caption=f"📰 **{name}**{part_suffix} • {friendly_date}",
-                        parse_mode="Markdown",
-                        read_timeout=300,
-                        write_timeout=300,
-                        connect_timeout=60,
-                        pool_timeout=60
-                    )
+                
+                message = None
+                for attempt in range(3):
+                    try:
+                        with open(part_file, 'rb') as f:
+                            message = await bot.send_document(
+                                chat_id=channel_id,
+                                document=f,
+                                caption=f"📰 **{name}**{part_suffix} • {friendly_date}",
+                                parse_mode="Markdown",
+                                read_timeout=300,
+                                write_timeout=300,
+                                connect_timeout=60,
+                                pool_timeout=60
+                            )
+                        break
+                    except Exception as upload_err:
+                        print(f"[{name}] Upload attempt {attempt+1} failed: {upload_err}")
+                        if attempt < 2:
+                            await asyncio.sleep(5)
+                        else:
+                            raise upload_err
+                            
+                if not message:
+                    raise RuntimeError("Failed to upload file to Telegram after 3 attempts.")
+                    
                 telegram_file_ids.append(message.document.file_id)
                 message_ids.append(str(message.message_id))
             
