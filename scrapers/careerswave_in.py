@@ -1,12 +1,9 @@
-import os
 import re
 import asyncio
 import logging
-import httpx
-import gdown
 import urllib.request
 from bs4 import BeautifulSoup
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from utils.helpers import get_today
 
 logger = logging.getLogger(__name__)
@@ -178,102 +175,32 @@ def parse_links(html: str) -> dict[str, str]:
     return links
 
 
-async def download_from_gdrive(file_id: str, output_file: str, name: str) -> bool:
-    """Downloads a file from Google Drive using direct HTTP GET with confirmation bypass,
-    falling back to gdown if it fails.
-    """
-    url = "https://docs.google.com/uc?export=download"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-    }
-    
-    logger.info("[%s] Attempting direct HTTP download from Google Drive...", name)
-    try:
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=120.0) as client:
-            resp = await client.get(url, params={"id": file_id})
-            
-            token = None
-            for cookie_name, cookie_val in resp.cookies.items():
-                if cookie_name.startswith("download_warning"):
-                    token = cookie_val
-                    break
-                    
-            if token:
-                logger.info("[%s] Large file warning received. Confirming download...", name)
-                resp = await client.get(url, params={"id": file_id, "confirm": token})
-                
-            if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-                with open(output_file, "wb") as f:
-                    f.write(resp.content)
-                logger.info("[%s] Direct HTTP download succeeded (%d bytes).", name, len(resp.content))
-                return True
-            else:
-                logger.info("[%s] Direct download did not return a valid PDF (status: %d).", name, resp.status_code)
-    except Exception as e:
-        logger.warning("[%s] Direct HTTP download failed: %s", name, e)
-        
-    logger.info("[%s] Falling back to gdown download...", name)
-    try:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: gdown.download(id=file_id, output=output_file, quiet=True))
-        if os.path.exists(output_file) and os.path.getsize(output_file) > 1000:
-            with open(output_file, "rb") as f:
-                magic = f.read(4)
-            if magic == b"%PDF":
-                logger.info("[%s] gdown fallback download succeeded.", name)
-                return True
-    except Exception as e:
-        logger.warning("[%s] gdown fallback download failed: %s", name, e)
-        
-    return False
+async def find_download_link(source_url: str, dates_to_try: list[date]) -> tuple[date, str] | None:
+    """Return ``(date, google_drive_url)`` for the first available date in
+    ``dates_to_try``, or ``None``. No download — just the link.
 
-async def scrape(source_url: str, slug: str, name: str, target_date: date = None) -> tuple[str, date] | None:
+    This is the single source of truth for "find the link for a date", used by
+    the scheduler, /get and the web UI. Reuses :func:`fetch_page` + :func:`parse_links`.
     """
-    Scrapes the careerswave.in website for a given newspaper.
-    Returns the absolute path to the downloaded PDF and the date, or None if failed.
-    
-    Supports both the old table format (DD-MM-YYYY) and the new paragraph
-    format (DD Month YYYY) used by careerswave.in.
-    """
-    logger.info("[%s] Fetching %s...", name, source_url)
     try:
         loop = asyncio.get_running_loop()
         html = await loop.run_in_executor(None, lambda: fetch_page(source_url))
     except Exception as e:
-        logger.error("[%s] Failed to fetch page: %s", name, e)
+        logger.error("Failed to fetch %s: %s", source_url, e)
         return None
 
-    links = parse_links(html)
+    links = parse_links(html)  # {DD-MM-YYYY: drive_url}
     if not links:
-        logger.info("[%s] No dated links found on the page.", name)
         return None
-
-    logger.info("[%s] Found %d dated links on the page.", name, len(links))
-
-    base_date = target_date or get_today()
-    dates_to_try = [base_date]
-    if not target_date:
-        dates_to_try.append(base_date - timedelta(days=1))
-        dates_to_try.append(base_date - timedelta(days=2))
-        dates_to_try.append(base_date - timedelta(days=3))
 
     for d in dates_to_try:
-        date_str = d.strftime("%d-%m-%Y")
-        if date_str in links:
-            view_url = links[date_str]
-            match = re.search(r'/d/([a-zA-Z0-9_-]+)', view_url) or re.search(r'[?&]id=([a-zA-Z0-9_-]+)', view_url)
-            if not match:
-                logger.warning("[%s] Could not extract Google Drive file ID from %s", name, view_url)
-                continue
-                
-            file_id = match.group(1)
-            output_file = f"{slug}_{d.strftime('%Y-%m-%d')}.pdf"
-            
-            if not await download_from_gdrive(file_id, output_file, name):
-                logger.warning("[%s] Failed to download PDF for %s", name, date_str)
-                continue
-                
-            return os.path.abspath(output_file), d
-
-    logger.info("[%s] No edition found for any of the dates: %s", name, [d.strftime('%Y-%m-%d') for d in dates_to_try])
+        url = links.get(d.strftime("%d-%m-%Y"))
+        if url:
+            return d, url
     return None
+
+
+async def get_latest_download_link(source_url: str, days_back: int = 10) -> tuple[date, str] | None:
+    """Link for the most recent available edition within ``days_back`` days."""
+    today = get_today()
+    return await find_download_link(source_url, [today - timedelta(days=i) for i in range(days_back + 1)])

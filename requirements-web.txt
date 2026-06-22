@@ -1,0 +1,6 @@
+# Dependencies for the standalone web testing UI (webui.py).
+# Installs the bot's deps too, since the UI reuses the scraper/config logic.
+-r requirements.txt
+
+fastapi==0.115.*
+uvicorn==0.30.*

@@ -1,169 +1,94 @@
-import os
 import re
 import asyncio
 import logging
 import urllib.request
-import httpx
-import gdown
 from bs4 import BeautifulSoup
-from datetime import date
+from datetime import date, timedelta
 from utils.helpers import get_today
 
 logger = logging.getLogger(__name__)
 
-async def download_from_gdrive(file_id: str, output_file: str, name: str) -> bool:
-    """Downloads a file from Google Drive using direct HTTP GET with confirmation bypass,
-    falling back to gdown if it fails.
-    """
-    url = "https://docs.google.com/uc?export=download"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-    }
-    
-    logger.info("[%s] Attempting direct HTTP download from Google Drive...", name)
-    try:
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=120.0) as client:
-            resp = await client.get(url, params={"id": file_id})
-            
-            # Check for download warning cookie
-            token = None
-            for cookie_name, cookie_val in resp.cookies.items():
-                if cookie_name.startswith("download_warning"):
-                    token = cookie_val
-                    break
-                    
-            if token:
-                logger.info("[%s] Large file warning received. Confirming download...", name)
-                resp = await client.get(url, params={"id": file_id, "confirm": token})
-                
-            if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-                with open(output_file, "wb") as f:
-                    f.write(resp.content)
-                logger.info("[%s] Direct HTTP download succeeded (%d bytes).", name, len(resp.content))
-                return True
-            else:
-                logger.info("[%s] Direct download did not return a valid PDF (status: %d).", name, resp.status_code)
-    except Exception as e:
-        logger.warning("[%s] Direct HTTP download failed: %s", name, e)
-        
-    logger.info("[%s] Falling back to gdown download...", name)
-    try:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: gdown.download(id=file_id, output=output_file, quiet=True))
-        if os.path.exists(output_file) and os.path.getsize(output_file) > 1000:
-            with open(output_file, "rb") as f:
-                magic = f.read(4)
-            if magic == b"%PDF":
-                logger.info("[%s] gdown fallback download succeeded.", name)
-                return True
-    except Exception as e:
-        logger.warning("[%s] gdown fallback download failed: %s", name, e)
-        
-    return False
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36"
 
-async def scrape(source_url: str, slug: str, name: str, target_date: date = None) -> tuple[str, date] | None:
+
+async def _fetch_html(source_url: str) -> str:
+    """Fetch a page's HTML off the event loop (urllib in an executor)."""
+    req = urllib.request.Request(source_url, headers={"User-Agent": _UA})
+
+    def fetch():
+        with urllib.request.urlopen(req, timeout=60) as response:
+            return response.read().decode("utf-8")
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fetch)
+
+
+def _date_matches(text: str, d: date) -> bool:
+    """Flexible date check: handles '12 Jun', '12th June', '12-06-2026', etc."""
+    nums = set(re.findall(r"\d+", text))
+    has_day = str(d.day) in nums or f"{d.day:02d}" in nums
+    has_month_text = d.strftime("%b").lower() in text or d.strftime("%B").lower() in text
+    has_month_num = str(d.month) in nums or f"{d.month:02d}" in nums
+    has_year = str(d.year) in nums
+    return has_day and (has_month_text or has_month_num) and has_year
+
+
+def _find_drive_url(soup: BeautifulSoup, dates_to_try: list[date]) -> tuple[str, date] | None:
+    """Find the Google Drive URL for the first matching date in `dates_to_try`.
+
+    Returns ``(drive_url, date)`` or ``None``. Shared by :func:`scrape` and
+    :func:`get_latest_download_link` so both use identical matching logic.
     """
-    Scrapes the dailyepaper.in website for a given newspaper.
-    Returns the absolute path to the downloaded PDF and its date, or None if failed.
+    for d in dates_to_try:
+        # 1. Standard <a> tags with Google Drive links
+        for a in soup.find_all("a", href=True):
+            if "drive.google.com/file/d/" in a["href"]:
+                parent_text = a.parent.get_text(strip=True).lower()
+                if _date_matches(parent_text, d):
+                    return a["href"], d
+
+        # 2. Ninja Tables / raw cells with Google Drive links
+        for tr in soup.find_all("tr"):
+            tds = tr.find_all("td")
+            if len(tds) >= 2:
+                drive_url = None
+                date_cell_text = ""
+                for td in tds:
+                    text = td.get_text(strip=True)
+                    if "drive.google.com/file/d/" in text:
+                        drive_url = text
+                    elif td.find("a", href=True) and "drive.google.com/file/d/" in td.find("a", href=True).get("href", ""):
+                        drive_url = td.find("a", href=True)["href"]
+                    else:
+                        date_cell_text += " " + text.lower()
+
+                if drive_url and _date_matches(date_cell_text, d):
+                    return drive_url, d
+    return None
+
+
+async def find_download_link(source_url: str, dates_to_try: list[date]) -> tuple[date, str] | None:
+    """Return ``(date, google_drive_url)`` for the first available date in
+    ``dates_to_try``, or ``None``. No download — just the link.
+
+    Single source of truth for "find the link for a date", used by the
+    scheduler, /get and the web UI. Reuses :func:`_find_drive_url`.
     """
-    logger.info("[%s] Fetching %s...", name, source_url)
-    
     try:
-        req = urllib.request.Request(
-            source_url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'}
-        )
-        
-        # Run urllib in executor to avoid blocking the event loop
-        loop = asyncio.get_running_loop()
-        def fetch_html():
-            with urllib.request.urlopen(req, timeout=60) as response:
-                return response.read().decode('utf-8')
-                
-        html = await loop.run_in_executor(None, fetch_html)
-        
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        base_date = target_date or get_today()
-        dates_to_try = [base_date]
-        if not target_date:
-            from datetime import timedelta
-            dates_to_try.append(base_date - timedelta(days=1))
-            dates_to_try.append(base_date - timedelta(days=2))
-            dates_to_try.append(base_date - timedelta(days=3))
-            
-        target_drive_url = None
-        newspaper_date = None
-        
-        for d in dates_to_try:
-            # 1. Search for standard <a> tags with Google Drive links
-            for a in soup.find_all('a', href=True):
-                if 'drive.google.com/file/d/' in a['href']:
-                    parent_text = a.parent.get_text(strip=True).lower()
-                    
-                    # Flexible date checking: handles '12 Jun', '12th June', '12-06-2026', etc.
-                    nums = set(re.findall(r'\d+', parent_text))
-                    has_day = str(d.day) in nums or f"{d.day:02d}" in nums
-                    has_month_text = d.strftime('%b').lower() in parent_text or d.strftime('%B').lower() in parent_text
-                    has_month_num = str(d.month) in nums or f"{d.month:02d}" in nums
-                    has_year = str(d.year) in nums
-                    
-                    if has_day and (has_month_text or has_month_num) and has_year:
-                        target_drive_url = a['href']
-                        newspaper_date = d
-                        break
-                        
-            if target_drive_url:
-                break
-                
-            # 2. Search for Ninja Tables or raw cells with Google Drive links if not found yet
-            for tr in soup.find_all('tr'):
-                tds = tr.find_all('td')
-                if len(tds) >= 2:
-                    drive_url = None
-                    date_cell_text = ""
-                    for td in tds:
-                        text = td.get_text(strip=True)
-                        if 'drive.google.com/file/d/' in text:
-                            drive_url = text
-                        elif td.find('a', href=True) and 'drive.google.com/file/d/' in td.find('a', href=True).get('href', ''):
-                            drive_url = td.find('a', href=True)['href']
-                        else:
-                            date_cell_text += " " + text.lower()
-                            
-                    if drive_url:
-                        # Run the same flexible date checking on non-link cells in the row
-                        nums = set(re.findall(r'\d+', date_cell_text))
-                        has_day = str(d.day) in nums or f"{d.day:02d}" in nums
-                        has_month_text = d.strftime('%b').lower() in date_cell_text or d.strftime('%B').lower() in date_cell_text
-                        has_month_num = str(d.month) in nums or f"{d.month:02d}" in nums
-                        has_year = str(d.year) in nums
-                        
-                        if has_day and (has_month_text or has_month_num) and has_year:
-                            target_drive_url = drive_url
-                            newspaper_date = d
-                            break
-            if target_drive_url:
-                break
-                
-        if not target_drive_url:
-            logger.info("[%s] Failed: No edition found for any of the dates: %s", name, [d.strftime('%Y-%m-%d') for d in dates_to_try])
-            return None
-            
-        match = re.search(r'/d/([a-zA-Z0-9_-]+)', target_drive_url)
-        if not match:
-            return None
-            
-        file_id = match.group(1)
-                
-        output_file = f"{slug}_{newspaper_date}.pdf"
-        
-        if not await download_from_gdrive(file_id, output_file, name):
-            logger.warning("[%s] Failed to download PDF from Google Drive", name)
-            return None
-            
-        return os.path.abspath(output_file), newspaper_date
-        
+        html = await _fetch_html(source_url)
     except Exception as e:
-        logger.error("[%s] Error: %s", name, e)
+        logger.error("Failed to fetch %s: %s", source_url, e)
         return None
+
+    soup = BeautifulSoup(html, "html.parser")
+    found = _find_drive_url(soup, dates_to_try)
+    if not found:
+        return None
+    drive_url, d = found
+    return d, drive_url
+
+
+async def get_latest_download_link(source_url: str, days_back: int = 10) -> tuple[date, str] | None:
+    """Link for the most recent available edition within ``days_back`` days."""
+    today = get_today()
+    return await find_download_link(source_url, [today - timedelta(days=i) for i in range(days_back + 1)])

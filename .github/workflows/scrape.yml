@@ -28,7 +28,7 @@ jobs:
     - name: Run Scraper and Delivery Engine
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        STORAGE_CHANNEL_ID: ${{ secrets.STORAGE_CHANNEL_ID }}
+        ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       run: |

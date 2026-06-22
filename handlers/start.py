@@ -38,18 +38,13 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "📌 <b>Quick Start</b>\n"
         "┌─────────────────────────────\n"
         "│ 1️⃣  /subscribe — Pick your papers\n"
-        "│ 2️⃣  /get — Browse the archives\n"
+        "│ 2️⃣  /get — Fetch any edition by date\n"
         "└─────────────────────────────\n\n"
         "📖 <b>All Commands</b>\n\n"
-        "  <b>Browsing</b>\n"
-        "  /subscribe — Interactive title browser\n\n"
-        "  <b>Subscriptions</b>\n"
-        "  /sub &lt;title&gt; — Quick subscribe\n"
-        "  /unsub &lt;title&gt; or /unsubscribe — Quick unsubscribe\n"
-        "  /subscriptions — View active subs\n\n"
-        "  <b>Reading</b>\n"
-        "  /get — Interactive archive browser\n\n"
-        "  /help — Full command reference\n\n"
+        "  /subscribe — Subscribe &amp; unsubscribe (interactive browser)\n"
+        "  /subscriptions — View &amp; manage your subscriptions\n"
+        "  /get — Fetch any newspaper edition by date\n"
+        "  /help — Command reference\n\n"
         "Let's get you set up! Tap /subscribe to begin 🚀"
     )
 
@@ -64,92 +59,19 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📚 <b>Newsstand Bot — Command Reference</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        "🔎 <b>Browsing &amp; Discovery</b>\n"
-        "  /subscribe — Interactive language → title browser\n\n"
-
-        "📋 <b>Subscriptions</b>\n"
-        "  /sub &lt;title&gt; — Quick-subscribe by name\n"
-        "  /unsub &lt;title&gt; or /unsubscribe — Quick-unsubscribe by name\n"
-        "  /subscriptions — View &amp; manage your active subs\n\n"
+        "🔎 <b>Browsing &amp; Subscriptions</b>\n"
+        "  /subscribe — Interactive browser. Subscribe to newspapers (by "
+        "language) or search magazines by name. Tap a subscribed title again "
+        "to unsubscribe.\n"
+        "  /subscriptions — View your active subscriptions and remove any "
+        "with a tap.\n\n"
 
         "📰 <b>Reading &amp; Retrieval</b>\n"
-        "  /get — Interactive archive browser (select title and date)\n\n"
+        "  /get — Pick a newspaper and a date, and I'll fetch that edition for "
+        "you on the spot.\n\n"
 
-        "💡 <i>Tip: You can use partial names with /sub — "
-        "the bot will fuzzy-match them for you!</i>"
+        "💡 <i>New editions are delivered to you automatically as soon as "
+        "they're published.</i>"
     )
 
     await update.message.reply_text(text, parse_mode="HTML")
-
-
-# ── /run_scraper (Admin only) ────────────────────────────────────────────────
-
-async def run_scraper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Trigger the scraper manually (admin only)."""
-    user_id = update.effective_user.id
-    config = context.bot_data.get("config")
-    
-    # Fallback to loading singleton Config if context doesn't have it
-    if not config:
-        from config import Config
-        config = Config.get()
-        
-    if user_id not in config.admin_ids:
-        await update.message.reply_text("⛔ <b>Access Denied.</b>", parse_mode="HTML")
-        return
-
-    # Check if a specific slug is provided as an argument
-    args = context.args
-    target_slug = args[0] if args else None
-
-    # Inform the user that scraper execution has started
-    msg = "🚀 <b>Scraper execution triggered!</b>\n\n"
-    if target_slug:
-        msg += f"Running scraper for slug: <code>{target_slug}</code>..."
-    else:
-        msg += "Running scraper for all pending titles..."
-        
-    await update.message.reply_text(msg, parse_mode="HTML")
-
-    # Run run_scrapers.py in a background process
-    import sys
-    import os
-    import asyncio
-    
-    python_exe = sys.executable
-    script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "run_scrapers.py")
-    script_path = os.path.abspath(script_path)
-    
-    async def run_bg_proc():
-        try:
-            cmd_args = [script_path]
-            if target_slug:
-                cmd_args.append(target_slug)
-                
-            proc = await asyncio.create_subprocess_exec(
-                python_exe, *cmd_args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await proc.communicate()
-            print(f"[Admin Scrape] Finished. Exit code: {proc.returncode}")
-            
-            result_msg = (
-                f"✅ <b>Scraper Run Finished!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Exit Code: {proc.returncode}\n"
-            )
-            if target_slug:
-                result_msg += f"Title: <code>{target_slug}</code>\n"
-            else:
-                result_msg += "All pending titles checked.\n"
-                
-            if proc.returncode != 0:
-                result_msg += f"\n⚠️ <b>Error Logs:</b>\n<pre>{stderr.decode()[:2000]}</pre>"
-                
-            await context.bot.send_message(chat_id=user_id, text=result_msg, parse_mode="HTML")
-        except Exception as ex:
-            print(f"[Admin Scrape] Process failed: {ex}")
-            await context.bot.send_message(chat_id=user_id, text=f"❌ <b>Scraper failed to start:</b> {ex}", parse_mode="HTML")
-
-    asyncio.create_task(run_bg_proc())

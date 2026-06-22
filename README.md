@@ -1,236 +1,109 @@
 # 📰 Newsstand Bot
 
-A full-featured Telegram bot for automated newspaper and magazine delivery. Subscribe to titles, get daily PDFs delivered to your chat, browse an archive of past editions.
+A Telegram bot that delivers Indian newspapers and international magazines straight to your chat. Subscribe to titles, get new editions automatically, and fetch any recent edition on demand.
 
-## Features
+Both newspapers and magazines are **link-shares**: the bot sends the source download link (Google Drive for newspapers, mirror hosts for magazines) — it never downloads or re-hosts the files, so there's no Telegram storage channel.
 
-- 📋 **50+ Indian newspapers** across 12 languages
+- **Newspapers** — a curated list in [`config.yaml`](config.yaml), scraped from careerswave.in / dailyepaper.in (Google Drive links).
+- **Magazines** — searched and scraped on demand from downmagaz.net.
 
-- ⏰ **Auto-delivery** — papers delivered every morning
-- 🔄 **Smart retries** — keeps checking until papers are available
-- 📚 **Archive** — request any past edition on demand
-- 📊 **Read tracker** — weekly delivery stats
-- 🗂️ **Telegram storage** — unlimited PDF archive via private channel
-- 🚀 **Push-to-deploy** — edit config, git push, done
+## How it works
 
-## Quick Start
+| Concern | Where it runs | Why |
+|---|---|---|
+| Bot (commands, subscriptions, delivery) | **Render** web service (webhook) | Always-on, responds instantly |
+| Database (metadata: titles, editions, subs) | **Supabase** (Postgres) | Managed, free tier |
+| Newspaper scraping | **GitHub Actions** cron | Finds the day's edition link |
+| Magazine scraping | **In-process** APScheduler on Render | Delivered promptly, every ~15 min |
 
-### 1. Create a Telegram Bot
+Magazines are polled in-process so new issues reach subscribers quickly instead of waiting on GitHub Actions' (best-effort, often-delayed) cron. A catch-up pass at the end of every cycle forwards any edition link a subscriber hasn't received yet.
 
-1. Open [@BotFather](https://t.me/BotFather) on Telegram
-2. Send `/newbot`, follow prompts
-3. Copy the bot token
+## Setup
 
-### 2. Create a Storage Channel
+### 1. Telegram
+1. Create a bot with [@BotFather](https://t.me/BotFather), copy the token.
+2. Get your own numeric user id (via [@userinfobot](https://t.me/userinfobot)) for admin access (admins get the daily failure report).
 
-1. Create a new Telegram channel (private)
-2. Add your bot as an admin (with "Post Messages" permission)
-3. Get the channel ID:
-   - Forward any message from the channel to [@userinfobot](https://t.me/userinfobot)
-   - Or send a message in the channel, then check `https://api.telegram.org/bot<TOKEN>/getUpdates`
+### 2. Supabase
+1. Create a project at [supabase.com](https://supabase.com).
+2. In the SQL editor, run [`supabase_setup.sql`](supabase_setup.sql) to create the schema.
+3. Copy the project URL and an API key from Project Settings → API.
 
-### 3. Get Your User ID
-
-- Send `/start` to [@userinfobot](https://t.me/userinfobot) on Telegram
-- Note your numeric user ID
-
-### 4. Configure
-
+### 3. Configure
 ```bash
-# Clone the repo
-git clone https://github.com/yourusername/newsstand-bot.git
-cd newsstand-bot
-
-# Create .env from template
 cp .env.example .env
-
-# Edit .env with your values
-nano .env
+# fill in BOT_TOKEN, ADMIN_IDS, SUPABASE_URL, SUPABASE_KEY
 ```
 
-Set these in `.env`:
-```
-BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
-ADMIN_IDS=your_user_id
-STORAGE_CHANNEL_ID=-1001234567890
-```
-
-### 5. Run Locally
-
+### 4. Run locally (polling)
 ```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or: venv\Scripts\activate  # Windows
-
-# Install dependencies
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Run the bot
 python main.py
 ```
-
-### 6. Write Your Scraper
-
-The bot ships with a scraper template. You need to fill in **one file** to connect it to your PDF source:
-
-```bash
-# Edit the template
-nano scrapers/template_scraper.py
-```
-
-See [SCRAPER_GUIDE.md](scrapers/SCRAPER_GUIDE.md) for detailed instructions. The template has `TODO` markers at the 3 places you need to add code (~30 lines total).
-
-**Test your scraper standalone:**
-```bash
-python -m scrapers.template_scraper
-```
+With `WEBHOOK_URL` unset the bot uses long-polling and the in-process scheduler stays off — run the scraper manually with `python run_scrapers.py`.
 
 ## Commands
 
-### User Commands
-
 | Command | Description |
 |---|---|
-| `/start` | Welcome message |
-| `/help` | Full command reference |
-| `/subscribe` | Browse & subscribe to titles by language |
-| `/sub <title>` | Quick subscribe (fuzzy matched) |
-| `/unsub <title>` | Quick unsubscribe |
-| `/subscriptions` | View your active subscriptions |
+| `/start`, `/help` | Welcome / command reference |
+| `/subscribe` | Interactive browser: subscribe to newspapers (by language) or search magazines; tap a subscribed title again to unsubscribe |
+| `/subscriptions` | View active subscriptions and remove any with a tap |
+| `/get` | Fetch any newspaper edition on demand (pick title → date; scraped live, no archive needed) |
 
-| `/today` | Get all of today's available papers |
-| `/get <title>` | Get today's edition of a specific title |
-| `/get <title> DD-MM-YYYY` | Get a past edition from archive |
-| `/tracker` | Weekly delivery statistics |
-| `/lastupdated` | Last available date per title |
-
-### Admin Commands
-
-| Command | Description |
-|---|---|
-| `/upload` | Manually upload a PDF |
-| `/sync` | Trigger scraper for all titles now |
-| `/stats` | Bot statistics |
-| `/broadcast <msg>` | Message all users |
+Subscribing delivers the latest available edition immediately; if nothing is stored yet, that one title is scraped on demand and delivered when it lands.
 
 ## Configuration
 
-All configuration lives in `config.yaml`. Edit this file to:
+All newspaper titles live in [`config.yaml`](config.yaml). Each entry:
+```yaml
+- name: The Times of India
+  slug: the-times-of-india
+  source_url: https://www.careerswave.in/times-of-india-epaper-pdf-free-download/
+  language: English
+  category: Newspaper
+  scrape_website: careerswave_in   # module in scrapers/
+```
+On startup the bot syncs these into the `titles` table and deactivates any newspaper no longer listed. Magazines are added dynamically when a user subscribes, so they are not listed here.
 
-- **Add/remove titles** — add entries under `titles:`
+## Web testing UI
 
-- **Change schedule** — edit `schedule:` section
-- **Manage languages** — titles are auto-grouped by their `language` field
-
-After editing, just `git push` — the bot auto-deploys.
-
-## Deployment (Oracle Cloud — Free Forever)
-
-### One-Time Server Setup
-
-1. **Create Oracle Cloud account** at [cloud.oracle.com](https://cloud.oracle.com)
-2. **Create an Always Free ARM VM:**
-   - Shape: VM.Standard.A1.Flex (1 OCPU, 6GB RAM)
-   - Image: Ubuntu 22.04+
-   - Add your SSH public key
-
-3. **Set up the server:**
+A standalone browser UI ([`webui.py`](webui.py)) for exercising the scraper/config logic without Telegram — handy for checking that sources still work.
 
 ```bash
-# SSH into VM
-ssh -i ~/.ssh/your_key ubuntu@<VM_IP>
-
-# Install Python
-sudo apt update && sudo apt install python3-pip python3-venv git -y
-
-# Clone your repo
-cd ~
-git clone https://github.com/yourusername/newsstand-bot.git
-cd newsstand-bot
-
-# Set up venv
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Create .env
-cp .env.example .env
-nano .env  # fill in your values
-
-# Test run
-python main.py
+pip install -r requirements-web.txt
+python webui.py            # → http://127.0.0.1:8000
 ```
 
-4. **Create systemd service:**
+Pick **English** or **Hindi** to choose a newspaper from `config.yaml` and see its latest Google Drive link; pick **Magazine** to search downmagaz.net and get the latest available edition's download links. It reads `config.yaml` and calls the same scraper modules the bot uses — no database or bot token required.
 
-```bash
-sudo nano /etc/systemd/system/newsstand-bot.service
-```
+## Deployment
 
-```ini
-[Unit]
-Description=Newsstand Telegram Bot
-After=network.target
+### Bot → Render
+- New **Web Service** from this repo, start command `python main.py`.
+- Env vars: `BOT_TOKEN`, `ADMIN_IDS`, `SUPABASE_URL`, `SUPABASE_KEY`, `WEBHOOK_URL` (`https://<service>.onrender.com/<BOT_TOKEN>`), optionally `WEBHOOK_SECRET`, `PORT`, `MAGAZINE_SCRAPE_INTERVAL_MIN`.
+- Setting `WEBHOOK_URL` switches the bot to webhook mode and enables the keep-alive self-ping + in-process magazine scraper.
 
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/newsstand-bot
-EnvironmentFile=/home/ubuntu/newsstand-bot/.env
-ExecStart=/home/ubuntu/newsstand-bot/venv/bin/python3 main.py
-Restart=always
-RestartSec=10
+### Newspaper scraper → GitHub Actions
+[`.github/workflows/scrape.yml`](.github/workflows/scrape.yml) runs `run_scrapers.py` every 15 minutes. Add repo secrets: `BOT_TOKEN`, `ADMIN_IDS`, `SUPABASE_URL`, `SUPABASE_KEY`.
 
-[Install]
-WantedBy=multi-user.target
-```
+> If you'd rather not use GitHub Actions, you can run `run_scrapers.py` from any cron host with the same env vars. (Since newspapers are now light link-lookups, you could also move them onto the in-process scheduler.)
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable newsstand-bot
-sudo systemctl start newsstand-bot
-```
-
-### Auto-Deploy via GitHub Actions
-
-1. In your GitHub repo → Settings → Secrets, add:
-   - `VM_HOST` — your VM's public IP
-   - `VM_USER` — `ubuntu`
-   - `SSH_KEY` — your private SSH key
-
-2. Push to `main` branch → bot auto-deploys in ~15 seconds.
-
-### Keeping the VM Alive
-
-Oracle may reclaim idle VMs. To prevent this:
-
-**Option A (recommended):** Upgrade to Pay-As-You-Go in OCI Console → Billing. Still free within limits, but exempt from idle reclaim.
-
-**Option B:** Add a cron job:
-```bash
-crontab -e
-# Add:
-0 */6 * * * dd if=/dev/urandom bs=1M count=50 | md5sum > /dev/null 2>&1
-```
-
-## Project Structure
-
+## Project structure
 ```
 newsstand-bot/
-├── main.py              # Entry point
-├── config.yaml          # ⭐ All configuration here
-├── config.py            # Config loader
-├── requirements.txt     # Dependencies
-├── .env.example         # Secrets template
-├── .github/workflows/   # CI/CD
-├── database/            # SQLite schema + operations
-├── handlers/            # Bot command handlers
-├── scrapers/            # Pluggable scraper system
-├── delivery/            # Scheduler + delivery engine
-└── utils/               # Helpers
+├── main.py              # Entry point: bot, webhook, in-process magazine scheduler
+├── run_scrapers.py      # Scrape + delivery engine (standalone CLI and importable cycle)
+├── webui.py             # Standalone web testing UI (FastAPI)
+├── web/index.html       # Test UI front-end
+├── config.py / config.yaml
+├── database/operations.py   # Supabase CRUD
+├── handlers/            # /start /subscribe /subscriptions /get, callbacks
+├── scrapers/            # careerswave_in, dailyepaper_in, downmagaz_net
+├── utils/               # helpers, shared Google Drive downloader
+└── supabase_setup.sql   # Schema
 ```
 
 ## License
-
-Personal use only. Respect copyright — use with content you have rights to access.
+Personal use only. Respect copyright — use only with content you have the right to access.

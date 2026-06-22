@@ -116,6 +116,7 @@ async def get_admin_ids(db_path: str) -> list[int]:
 # Titles
 # =====================================================================
 
+@_retry_on_client_error
 async def add_title(
     db_path: str,
     name: str,
@@ -130,10 +131,12 @@ async def add_title(
         "slug": slug,
         "language": language,
         "category": category,
-        "source": source
+        "source": source,
+        "is_active": 1,
     }
-    # Supabase upsert: if slug exists, we want to fail or update? Original SQL did not have ON CONFLICT, so it fails.
-    resp = await db.table("titles").insert(data).execute()
+    # Upsert on the unique slug so concurrent subscriptions to the same brand-new
+    # magazine can't race into a duplicate-key error. Returns the existing or new id.
+    resp = await db.table("titles").upsert(data, on_conflict="slug").execute()
     return resp.data[0]["id"]
 
 

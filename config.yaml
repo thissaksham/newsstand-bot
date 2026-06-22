@@ -8,8 +8,6 @@ bot:
     subscriptions.
 
     '
-storage:
-  channel_id: ${STORAGE_CHANNEL_ID}
 schedule:
   timezone: Asia/Kolkata
   first_check: 05:30

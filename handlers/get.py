@@ -1,10 +1,16 @@
 """
-Newsstand Bot — /get and /today handlers
-Retrieve specific editions interactively or all of today's subscribed papers.
+Newsstand Bot — /get handler
+
+Interactive "fetch any edition" flow that mirrors the /subscribe browser, but
+the final step is a date instead of a subscribe toggle. It does NOT read the
+archive — it looks up the chosen title+date's download link live (reusing the
+scraper modules' ``find_download_link``) and sends the link, the same way a
+normal subscription delivery does.
 """
 
+import importlib
 import logging
-from datetime import datetime
+from datetime import date, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -14,217 +20,252 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-from database.operations import (
-    get_all_titles,
-    get_edition,
-)
-from utils.helpers import format_date
+from config import Config
+from utils.helpers import format_date, get_today, html_escape
 
 logger = logging.getLogger(__name__)
 
 # ── Conversation States ──────────────────────────────────────────────────────
 SELECT_LANGUAGE, SELECT_TITLE, SELECT_DATE = range(3)
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  /get — Interactive Archive Fetcher
-# ═════════════════════════════════════════════════════════════════════════════
+TITLES_PER_PAGE = 8
+DATES_PER_PAGE = 8
+DATE_WINDOW_DAYS = 30  # how far back the date picker can go
+
+LANG_FLAGS: dict[str, str] = {
+    "english": "🇬🇧", "hindi": "🇮🇳", "tamil": "🇮🇳", "telugu": "🇮🇳",
+    "malayalam": "🇮🇳", "kannada": "🇮🇳", "bengali": "🇮🇳", "marathi": "🇮🇳",
+    "gujarati": "🇮🇳", "punjabi": "🇮🇳", "urdu": "🇵🇰",
+}
+
+
+def _flag(language: str) -> str:
+    return LANG_FLAGS.get(language.lower(), "🌐")
+
+
+# ── Step 1: /get → choose a language ─────────────────────────────────────────
 
 async def get_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start the /get conversation and ask for language."""
-    keyboard = [
-        [
-            InlineKeyboardButton("🇺🇸 English", callback_data="get_lang_english"),
-            InlineKeyboardButton("🇮🇳 Hindi", callback_data="get_lang_hindi"),
-        ]
+    """Start the /get conversation and ask for a language (from config.yaml)."""
+    languages = list(dict.fromkeys(
+        t.language for t in Config.get().titles
+        if getattr(t, "category", "Newspaper") == "Newspaper"
+    ))
+
+    if not languages:
+        await update.message.reply_text("No newspapers are configured.")
+        return ConversationHandler.END
+
+    buttons = [
+        [InlineKeyboardButton(f"{_flag(lang)} {lang.title()}", callback_data=f"get_lang_{lang}")]
+        for lang in languages
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "📰 <b>Newsstand Archives</b>\n\n"
-        "Please select a language:",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
+        "📰 <b>Get a Newspaper</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Select a language:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
     )
     return SELECT_LANGUAGE
 
+
+# ── Step 2: language → choose a title ────────────────────────────────────────
+
 async def get_language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle language selection and show titles."""
     query = update.callback_query
     await query.answer()
+    language = query.data[len("get_lang_"):]
+    context.user_data["get_language"] = language
+    return await _show_titles_page(query, context, language, 0)
 
-    lang = query.data.split("_")[-1].lower() # english or hindi
-    db_path = context.bot_data["config"].db_path
-    all_titles = await get_all_titles(db_path)
-    from database.operations import get_titles_with_editions
-    available_title_ids = await get_titles_with_editions(db_path)
-    
-    # Filter titles by config language and availability
-    config = context.bot_data.get("config")
-    lang_titles = []
-    if config:
-        for t in config.titles:
-            if getattr(t, "language", "").lower() == lang:
-                # Find matching DB title
-                db_t = next((dt for dt in all_titles if dt["slug"] == getattr(t, "slug", "")), None)
-                if db_t and db_t["id"] in available_title_ids:
-                    lang_titles.append(db_t)
-                    
-    if not lang_titles:
-        await query.edit_message_text(
-            f"No available {lang.capitalize()} titles found with recent editions.",
-        )
+
+async def handle_titles_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    page = int(query.data[len("get_tpage_"):])
+    language = context.user_data.get("get_language", "")
+    return await _show_titles_page(query, context, language, page)
+
+
+async def _show_titles_page(query, context, language: str, page: int) -> int:
+    titles = [
+        t for t in Config.get().get_titles_by_language(language)
+        if getattr(t, "category", "Newspaper") == "Newspaper"
+    ]
+    if not titles:
+        await query.edit_message_text(f"📭 No titles available for <b>{html_escape(language.title())}</b>.", parse_mode="HTML")
         return ConversationHandler.END
 
-    # Create buttons for titles (2 per row)
-    keyboard = []
-    row = []
-    for t in lang_titles:
-        row.append(InlineKeyboardButton(t["name"], callback_data=f"get_title_{t['id']}"))
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-        
-    keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    context.user_data["get_titles"] = titles  # cache for selection by index
+
+    total_pages = max(1, (len(titles) + TITLES_PER_PAGE - 1) // TITLES_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * TITLES_PER_PAGE
+    page_titles = titles[start:start + TITLES_PER_PAGE]
+
+    buttons = [
+        [InlineKeyboardButton(t.name, callback_data=f"get_title_{start + i}")]
+        for i, t in enumerate(page_titles)
+    ]
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"get_tpage_{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"get_tpage_{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")])
+
     await query.edit_message_text(
-        f"📰 <b>{lang.capitalize()} Newspapers</b>\n\n"
-        "Please select a title:",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
+        f"{_flag(language)} <b>{html_escape(language.title())} Newspapers</b>  "
+        f"<i>(page {page + 1}/{total_pages})</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Select a title:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
     )
     return SELECT_TITLE
 
-DATES_PER_PAGE = 10
 
-async def _show_dates_page(query, db_path: str, title_id: int, page: int) -> int:
-    """Build date list with pagination."""
-    all_titles = await get_all_titles(db_path)
-    title = next((t for t in all_titles if t["id"] == title_id), None)
-    
-    if not title:
-        await query.edit_message_text("❌ Title not found.")
-        return ConversationHandler.END
-
-    from database.operations import get_available_dates
-    dates = await get_available_dates(db_path, title_id)
-        
-    if not dates:
-        await query.edit_message_text(
-            f"📭 No archive editions found for <b>{title['name']}</b> yet.\n"
-            "Try again later!",
-            parse_mode="HTML"
-        )
-        return ConversationHandler.END
-
-    start = page * DATES_PER_PAGE
-    end = start + DATES_PER_PAGE
-    page_dates = dates[start:end]
-
-    keyboard = []
-    row_btns = []
-    for d_str in page_dates:
-        d_obj = datetime.strptime(d_str, "%Y-%m-%d").date()
-        friendly_date = format_date(d_obj)
-        
-        row_btns.append(InlineKeyboardButton(friendly_date, callback_data=f"get_date_{title_id}_{d_str}"))
-        if len(row_btns) == 2:
-            keyboard.append(row_btns)
-            row_btns = []
-            
-    if row_btns:
-        keyboard.append(row_btns)
-        
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"get_dpage_{title_id}_{page-1}"))
-    if end < len(dates):
-        nav_buttons.append(InlineKeyboardButton("Older ➡️", callback_data=f"get_dpage_{title_id}_{page+1}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
-        
-    keyboard.append([InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"📅 <b>{title['name']}</b>\n\n"
-        "Select an available date:",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-    return SELECT_DATE
+# ── Step 3: title → choose a date ────────────────────────────────────────────
 
 async def get_title_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle title selection and show available dates."""
     query = update.callback_query
     await query.answer()
-    title_id = int(query.data.split("_")[-1])
-    db_path = context.bot_data["config"].db_path
-    return await _show_dates_page(query, db_path, title_id, 0)
+    idx = int(query.data[len("get_title_"):])
+    titles = context.user_data.get("get_titles", [])
+    if idx < 0 or idx >= len(titles):
+        await query.edit_message_text("⌛ Session expired. Please run /get again.")
+        return ConversationHandler.END
+    context.user_data["get_title_idx"] = idx
+    return await _show_dates_page(query, context, 0)
+
 
 async def handle_dates_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle pagination for dates."""
     query = update.callback_query
     await query.answer()
-    parts = query.data.split("_")
-    title_id = int(parts[2])
-    page = int(parts[3])
-    db_path = context.bot_data["config"].db_path
-    return await _show_dates_page(query, db_path, title_id, page)
+    page = int(query.data[len("get_dpage_"):])
+    return await _show_dates_page(query, context, page)
+
+
+async def _show_dates_page(query, context, page: int, note: str = "") -> int:
+    titles = context.user_data.get("get_titles", [])
+    idx = context.user_data.get("get_title_idx")
+    if idx is None or idx >= len(titles):
+        await query.edit_message_text("⌛ Session expired. Please run /get again.")
+        return ConversationHandler.END
+    title = titles[idx]
+
+    today = get_today()
+    all_dates = [today - timedelta(days=i) for i in range(DATE_WINDOW_DAYS)]
+    start = page * DATES_PER_PAGE
+    page_dates = all_dates[start:start + DATES_PER_PAGE]
+
+    buttons, row = [], []
+    for d in page_dates:
+        row.append(InlineKeyboardButton(format_date(d), callback_data=f"get_date_{d.isoformat()}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"get_dpage_{page - 1}"))
+    if start + DATES_PER_PAGE < len(all_dates):
+        nav.append(InlineKeyboardButton("Older ➡️", callback_data=f"get_dpage_{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")])
+
+    header = f"📅 <b>{html_escape(title.name)}</b>\n"
+    if note:
+        header += f"{note}\n"
+    header += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nChoose a date to fetch:"
+
+    await query.edit_message_text(header, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
+    return SELECT_DATE
+
+
+# ── Step 4: date → scrape live and deliver the PDF ───────────────────────────
 
 async def get_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle date selection and send the PDF."""
     query = update.callback_query
-    await query.answer("Fetching your newspaper... ⏳")
+    await query.answer("Fetching… ⏳")
 
-    data_parts = query.data.split("_")
-    title_id = int(data_parts[2])
-    date_str = data_parts[3]
-    
-    db_path = context.bot_data["config"].db_path
-    all_titles = await get_all_titles(db_path)
-    title = next((t for t in all_titles if t["id"] == title_id), None)
-    
-    d_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-    edition = await get_edition(db_path, title_id, d_obj)
-    
-    if not edition or not edition.get("file_id"):
-        await query.edit_message_text("❌ Sorry, this edition is no longer available.")
+    titles = context.user_data.get("get_titles", [])
+    idx = context.user_data.get("get_title_idx")
+    if idx is None or idx >= len(titles):
+        await query.edit_message_text("⌛ Session expired. Please run /get again.")
         return ConversationHandler.END
-        
-    friendly_date = format_date(d_obj)
-    
-    await query.edit_message_text(f"✅ Sending <b>{title['name']}</b> for {friendly_date}...", parse_mode="HTML")
-    
-    await context.bot.send_document(
-        chat_id=query.message.chat_id,
-        document=edition["file_id"],
-        caption=f"📰 <b>{title['name']}</b>  •  {friendly_date}",
+
+    title = titles[idx]
+    d = date.fromisoformat(query.data[len("get_date_"):])
+    friendly = format_date(d)
+    safe_name = html_escape(title.name)
+
+    if not title.source_url or not title.scrape_website:
+        await query.edit_message_text(f"❌ <b>{safe_name}</b> has no source configured.", parse_mode="HTML")
+        return ConversationHandler.END
+
+    await query.edit_message_text(f"⏳ Fetching <b>{safe_name}</b> for {friendly}…", parse_mode="HTML")
+
+    try:
+        module = importlib.import_module(f"scrapers.{title.scrape_website}")
+    except ImportError:
+        await query.edit_message_text(f"❌ Scraper <code>{html_escape(title.scrape_website)}</code> not found.", parse_mode="HTML")
+        return ConversationHandler.END
+
+    try:
+        result = await module.find_download_link(title.source_url, [d])
+    except Exception as e:
+        logger.exception("[/get] link lookup failed for %s %s", title.slug, d)
+        await query.edit_message_text(f"❌ Fetch failed: {html_escape(str(e))}", parse_mode="HTML")
+        return ConversationHandler.END
+
+    if not result:
+        # Not published / not on the source for that date — let them try another.
+        return await _show_dates_page(
+            query, context, 0,
+            note=f"📭 <i>No edition found for {friendly}. Try another date.</i>",
+        )
+
+    edition_date, link = result
+    await query.edit_message_text(
+        f"📰 <b>{safe_name}</b> — {format_date(edition_date)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Here is your edition:\n"
+        f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>',
         parse_mode="HTML",
+        disable_web_page_preview=True,
     )
     return ConversationHandler.END
 
+
 async def get_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel the conversation."""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Conversation cancelled.")
+    await query.edit_message_text("Cancelled.")
     return ConversationHandler.END
+
 
 get_conversation_handler = ConversationHandler(
     entry_points=[CommandHandler("get", get_start)],
     states={
         SELECT_LANGUAGE: [
-            CallbackQueryHandler(get_language_selected, pattern="^get_lang_")
+            CallbackQueryHandler(get_language_selected, pattern="^get_lang_"),
         ],
         SELECT_TITLE: [
-            CallbackQueryHandler(get_title_selected, pattern="^get_title_")
+            CallbackQueryHandler(handle_titles_page_callback, pattern="^get_tpage_"),
+            CallbackQueryHandler(get_title_selected, pattern="^get_title_"),
         ],
         SELECT_DATE: [
             CallbackQueryHandler(handle_dates_page_callback, pattern="^get_dpage_"),
-            CallbackQueryHandler(get_date_selected, pattern="^get_date_")
+            CallbackQueryHandler(get_date_selected, pattern="^get_date_"),
         ],
     },
     fallbacks=[CallbackQueryHandler(get_cancel, pattern="^get_cancel$")],

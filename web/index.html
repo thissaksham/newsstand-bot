@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>📰 Newsstand Bot — Test UI</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --ink: #1f2933;
+    --muted: #6b7280;
+    --border: #e3e6ea;
+    --accent: #0f766e;
+    --accent-soft: #d7f0ec;
+    --danger: #b91c1c;
+    --shadow: 0 1px 3px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.06);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 32px 16px 64px;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 28px; }
+  header h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: -.02em; }
+  header p { margin: 0; color: var(--muted); }
+
+  .cats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+  .cat {
+    appearance: none; cursor: pointer; background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 18px 10px; font-size: 15px; font-weight: 600; color: var(--ink);
+    box-shadow: var(--shadow); transition: transform .08s ease, border-color .15s ease, background .15s ease;
+  }
+  .cat .emoji { display: block; font-size: 26px; margin-bottom: 6px; }
+  .cat:hover { transform: translateY(-2px); }
+  .cat.active { border-color: var(--accent); background: var(--accent-soft); }
+
+  .panel { display: none; }
+  .panel.show { display: block; animation: fade .2s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; box-shadow: var(--shadow); }
+  label { display: block; font-weight: 600; margin-bottom: 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+
+  select, input[type=text] {
+    width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+    font-size: 15px; background: #fff; color: var(--ink); outline: none;
+  }
+  select:focus, input[type=text]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  .row { display: flex; gap: 10px; }
+  .row input { flex: 1; }
+  button.go {
+    appearance: none; cursor: pointer; border: none; border-radius: 10px; padding: 0 18px;
+    background: var(--accent); color: #fff; font-weight: 600; font-size: 15px;
+  }
+  button.go:disabled { opacity: .55; cursor: default; }
+
+  .result { margin-top: 18px; }
+  .muted { color: var(--muted); }
+  .hidden { display: none; }
+
+  .res-card { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: #fbfcfd; }
+  .res-card h3 { margin: 0 0 4px; font-size: 17px; }
+  .res-card .date { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+
+  a.dl {
+    display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--accent);
+    font-weight: 600; padding: 11px 14px; border: 1px solid var(--accent-soft); border-radius: 10px;
+    background: var(--accent-soft); margin-top: 8px; word-break: break-all;
+  }
+  a.dl:hover { filter: brightness(.97); }
+
+  .mag-results { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+  .mag-item {
+    text-align: left; cursor: pointer; background: #fff; border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px; font-size: 15px; font-weight: 500; color: var(--ink);
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  }
+  .mag-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .mag-item .chip { font-size: 11px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+
+  .spinner {
+    width: 18px; height: 18px; border: 2px solid var(--accent-soft); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; vertical-align: -3px; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error { color: var(--danger); font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>📰 Newsstand Bot</h1>
+    <p>Testing UI — pick a category to fetch the latest available edition.</p>
+  </header>
+
+  <div class="cats">
+    <button class="cat" data-cat="english" onclick="selectCategory('english')"><span class="emoji">🇬🇧</span>English</button>
+    <button class="cat" data-cat="hindi"   onclick="selectCategory('hindi')"><span class="emoji">🇮🇳</span>Hindi</button>
+    <button class="cat" data-cat="magazine" onclick="selectCategory('magazine')"><span class="emoji">📖</span>Magazine</button>
+  </div>
+
+  <!-- Newspaper panel -->
+  <div class="panel" id="panel-news">
+    <div class="card">
+      <label id="news-label">Choose a newspaper</label>
+      <select id="news-select" onchange="onNewspaperChange()">
+        <option value="">Loading…</option>
+      </select>
+      <div class="result" id="news-result"></div>
+    </div>
+  </div>
+
+  <!-- Magazine panel -->
+  <div class="panel" id="panel-mag">
+    <div class="card">
+      <label>Search for a magazine</label>
+      <form class="row" onsubmit="searchMagazines(event)">
+        <input type="text" id="mag-input" placeholder="e.g. The Economist" autocomplete="off" />
+        <button class="go" type="submit">Search</button>
+      </form>
+      <div id="mag-results" class="mag-results"></div>
+      <div class="result" id="mag-result"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let magSearchResults = [];
+
+  function setActiveCat(cat) {
+    document.querySelectorAll('.cat').forEach(b =>
+      b.classList.toggle('active', b.dataset.cat === cat));
+  }
+
+  function showPanel(which) {
+    document.getElementById('panel-news').classList.toggle('show', which === 'news');
+    document.getElementById('panel-mag').classList.toggle('show', which === 'mag');
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+      ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  // Centralised fetch → JSON with a clear message when the backend isn't running.
+  async function fetchJson(url) {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (e) {
+      throw new Error('Cannot reach the server. Start the backend with: python webui.py');
+    }
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      throw new Error('Backend not running — got HTML, not JSON. This is the static preview; run "python webui.py" and open http://127.0.0.1:8000');
+    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || ('Request failed (' + res.status + ')'));
+    return data;
+  }
+
+  async function selectCategory(cat) {
+    setActiveCat(cat);
+    if (cat === 'magazine') {
+      showPanel('mag');
+      document.getElementById('mag-input').focus();
+      return;
+    }
+    // english / hindi
+    showPanel('news');
+    document.getElementById('news-result').innerHTML = '';
+    const sel = document.getElementById('news-select');
+    const lang = cat.charAt(0).toUpperCase() + cat.slice(1); // English / Hindi
+    document.getElementById('news-label').textContent = `Choose a ${lang} newspaper`;
+    sel.innerHTML = '<option value="">Loading…</option>';
+    try {
+      const titles = await fetchJson(`/api/newspapers?language=${encodeURIComponent(lang)}`);
+      if (!titles.length) {
+        sel.innerHTML = '<option value="">No titles found</option>';
+        return;
+      }
+      sel.innerHTML = '<option value="">— Select —</option>' +
+        titles.map(t => `<option value="${escapeHtml(t.slug)}">${escapeHtml(t.name)}</option>`).join('');
+    } catch (e) {
+      sel.innerHTML = '<option value="">— unavailable —</option>';
+      document.getElementById('news-result').innerHTML = `<p class="error">⚠️ ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  async function onNewspaperChange() {
+    const sel = document.getElementById('news-select');
+    const out = document.getElementById('news-result');
+    const slug = sel.value;
+    if (!slug) { out.innerHTML = ''; return; }
+    out.innerHTML = `<p class="muted"><span class="spinner"></span>Fetching latest edition…</p>`;
+    try {
+      const data = await fetchJson(`/api/newspaper-link?slug=${encodeURIComponent(slug)}`);
+      if (!data.found) {
+        out.innerHTML = `<p class="muted">📭 No recent edition found for <b>${escapeHtml(data.name)}</b>.</p>`;
+        return;
+      }
+      out.innerHTML = `
+        <div class="res-card">
+          <h3>${escapeHtml(data.name)}</h3>
+          <div class="date">Latest available · ${escapeHtml(data.date)}</div>
+          <a class="dl" href="${escapeHtml(data.url)}" target="_blank" rel="noopener">⬇️ Download (Google Drive)</a>
+        </div>`;
+    } catch (e) {
+      out.innerHTML = `<p class="error">⚠️ Request failed: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  async function searchMagazines(ev) {
+    ev.preventDefault();
+    const q = document.getElementById('mag-input').value.trim();
+    const list = document.getElementById('mag-results');
+    const out = document.getElementById('mag-result');
+    out.innerHTML = '';
+    if (!q) return;
+    list.innerHTML = `<p class="muted"><span class="spinner"></span>Searching…</p>`;
+    try {
+      magSearchResults = await fetchJson(`/api/magazines/search?q=${encodeURIComponent(q)}`);
+      if (!magSearchResults.length) {
+        list.innerHTML = `<p class="muted">❌ No magazines matched “${escapeHtml(q)}”.</p>`;
+        return;
+      }
+      list.innerHTML = magSearchResults.map((m, i) => {
+        const countries = (m.countries && m.countries.length) ? `<span class="chip">${escapeHtml(m.countries.join(', '))}</span>` : '';
+        return `<button class="mag-item" onclick="selectMagazine(${i})">
+                  <span>📖 ${escapeHtml(m.edition_name)}</span>${countries}
+                </button>`;
+      }).join('');
+    } catch (e) {
+      list.innerHTML = `<p class="error">⚠️ Search failed: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  async function selectMagazine(idx) {
+    const m = magSearchResults[idx];
+    if (!m) return;
+    const out = document.getElementById('mag-result');
+    out.innerHTML = `<p class="muted"><span class="spinner"></span>Fetching latest version of <b>${escapeHtml(m.edition_name)}</b>…</p>`;
+    let url = `/api/magazines/latest?tag_url=${encodeURIComponent(m.tag_url)}`;
+    if (m.version) url += `&version=${encodeURIComponent(m.version)}`;
+    try {
+      const data = await fetchJson(url);
+      if (!data.found) {
+        out.innerHTML = `<p class="muted">📭 No downloadable edition found for <b>${escapeHtml(m.edition_name)}</b>.</p>`;
+        return;
+      }
+      const links = (data.links || []).map(l =>
+        `<a class="dl" href="${escapeHtml(l.href)}" target="_blank" rel="noopener">⬇️ Download via ${escapeHtml(l.domain)}</a>`
+      ).join('');
+      out.innerHTML = `
+        <div class="res-card">
+          <h3>${escapeHtml(data.title)}</h3>
+          <div class="date">Latest available · ${escapeHtml(data.date)}</div>
+          ${links || '<p class="muted">No external download links found on the post.</p>'}
+        </div>`;
+    } catch (e) {
+      out.innerHTML = `<p class="error">⚠️ Request failed: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+</script>
+</body>
+</html>

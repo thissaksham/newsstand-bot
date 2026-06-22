@@ -86,14 +86,6 @@ class Config:
             if aid.strip().isdigit()
         ]
 
-        # storage_channel_id can come from env (higher priority) or yaml
-        env_channel = os.environ.get("STORAGE_CHANNEL_ID", "")
-        yaml_channel = str(raw.get("storage", {}).get("channel_id", ""))
-        channel_str = env_channel or yaml_channel
-        self._storage_channel_id: int = (
-            int(channel_str) if channel_str.lstrip("-").isdigit() else 0
-        )
-
         # ── paths ───────────────────────────────────────────────────
         self._db_path: Path = _PROJECT_ROOT / "data" / "newsstand.db"
         self._download_dir: Path = _PROJECT_ROOT / "data" / "downloads"
@@ -157,10 +149,6 @@ class Config:
     @property
     def admin_ids(self) -> list[int]:
         return list(self._admin_ids)
-
-    @property
-    def storage_channel_id(self) -> int:
-        return self._storage_channel_id
 
     @property
     def db_path(self) -> Path:

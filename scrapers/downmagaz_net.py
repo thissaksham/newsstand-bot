@@ -268,14 +268,23 @@ async def get_download_links(post_url: str) -> list[tuple[str, str]]:
                 return []
                 
             links = []
+            seen = set()
             for a in fullstory.find_all('a', href=True):
                 href = a['href']
                 parsed = urlparse(href)
                 domain = parsed.netloc.lower()
-                
-                # Check if it is an external link
-                if domain and not domain.endswith("downmagaz.net") and not href.startswith("javascript:") and not href.startswith("#"):
-                    links.append((domain, href))
+
+                # Only forward real external http(s) links: this drops
+                # javascript:/data:/mailto: and on-site/anchor links, so a
+                # malformed or hostile href can never reach a subscriber.
+                if parsed.scheme not in ("http", "https"):
+                    continue
+                if not domain or domain.endswith("downmagaz.net"):
+                    continue
+                if href in seen:
+                    continue
+                seen.add(href)
+                links.append((domain, href))
             return links
     except Exception:
         return []

@@ -4,6 +4,8 @@ Interactive category → title browser with inline keyboards.
 Supports newspaper languages and downmagaz.net magazine searches.
 """
 
+import asyncio
+import datetime
 import logging
 import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -27,8 +29,11 @@ from database.operations import (
     get_title_by_slug,
     add_title,
     search_titles,
+    _get_client,
+    log_delivery,
+    has_been_delivered,
 )
-from utils.helpers import fuzzy_match_title
+from utils.helpers import format_date, html_escape
 from scrapers.downmagaz_net import (
     search_magazines,
     scrape_magazine_tag,
@@ -40,6 +45,33 @@ from scrapers.downmagaz_net import (
 logger = logging.getLogger(__name__)
 
 TITLES_PER_PAGE = 8
+
+# Strong references to fire-and-forget background tasks. asyncio only keeps weak
+# references to tasks, so without this set a task can be garbage-collected
+# mid-run (which silently killed on-subscribe scrapes before).
+_BG_TASKS: set[asyncio.Task] = set()
+
+
+def _track_task(task: asyncio.Task) -> None:
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+
+
+async def _reply(query, update, bot, user_id: int, text: str) -> None:
+    """Send/replace a status message via whichever channel we were called from."""
+    if query:
+        await query.edit_message_text(text, parse_mode="HTML", disable_web_page_preview=True)
+    elif update:
+        await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        await bot.send_message(chat_id=user_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
+
+
+def _magazine_links_html(links: list[tuple[str, str]]) -> str:
+    return "".join(
+        f'• <a href="{html_escape(href)}">Download via {html_escape(domain)}</a>\n'
+        for domain, href in links
+    )
 
 # ── Language → flag emoji mapping ────────────────────────────────────────────
 LANG_FLAGS: dict[str, str] = {
@@ -63,227 +95,159 @@ def _flag(language: str) -> str:
     return LANG_FLAGS.get(language.lower(), "🌐")
 
 
+async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, category: str, edition: dict) -> None:
+    """Deliver one already-stored edition's download link(s) to a single user and
+    log the delivery. Assumes the caller checked it isn't a dup."""
+    edition_id = edition["id"]
+    edition_date = datetime.date.fromisoformat(edition["date"])
+    file_id = edition.get("file_id") or ""
+    friendly_date = format_date(edition_date)
+    safe_name = html_escape(title_name)
+
+    if category == "Magazine":
+        links = []
+        for post_url in (p for p in file_id.split(",") if p):
+            links.extend(await get_download_links(post_url))
+        if links:
+            await bot.send_message(
+                chat_id=user_id, parse_mode="HTML", disable_web_page_preview=True,
+                text=(
+                    f"📖 <b>Latest Available Edition ({friendly_date}):</b>\n"
+                    f"{_magazine_links_html(links)}"
+                ),
+            )
+    else:
+        link = file_id.split(",")[0]
+        if link.startswith(("http://", "https://")):
+            await bot.send_message(
+                chat_id=user_id, parse_mode="HTML", disable_web_page_preview=True,
+                text=(
+                    f"📰 <b>{safe_name}</b> — {friendly_date}\n"
+                    f"Latest available edition:\n"
+                    f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
+                ),
+            )
+
+    await log_delivery("", user_id, edition_id, "success")
+
+
+async def _scrape_and_deliver_one(bot, slug: str, title_id: int, user_id: int, category: str, title_name: str) -> None:
+    """On-demand: scrape a single just-subscribed title in-process, then deliver
+    the latest edition to the user (unless the cycle already delivered it)."""
+    try:
+        from run_scrapers import run_scrape_cycle
+        await run_scrape_cycle(bot, target_slug=slug)
+    except Exception as ex:
+        logger.error("[BG Scrape %s] cycle failed: %s", slug, ex)
+
+    try:
+        db = await _get_client()
+        resp = await db.table("editions").select("*").eq("title_id", title_id)\
+            .eq("status", "delivered").order("date", desc=True).limit(1).execute()
+
+        if not resp.data:
+            try:
+                await bot.send_message(
+                    chat_id=user_id, parse_mode="HTML",
+                    text=(
+                        f"😔 We couldn't fetch <b>{html_escape(title_name)}</b> right now. "
+                        f"We'll keep checking and send it the moment it's available."
+                    ),
+                )
+            except Exception:
+                pass
+            return
+
+        edition = resp.data[0]
+        if await has_been_delivered("", user_id, edition["id"]):
+            return  # the scrape cycle already delivered it
+        await _deliver_stored_edition_to_user(bot, user_id, title_name, category, edition)
+    except Exception as ex:
+        logger.error("[BG Scrape %s] post-scrape delivery failed: %s", slug, ex)
+
+
 async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, title_id: int = None, query=None, update=None) -> None:
-    """Checks and delivers the latest edition of subscribed titles to the user
-    if they haven't received them yet.
-    If the edition is not in the database, it spawns a background scraper run.
+    """Deliver the latest available edition of newly-subscribed titles to the user.
+
+    If a title has no edition stored yet, kick off an in-process scrape for just
+    that title and deliver once it lands.
     """
     try:
-        from database.operations import get_user_subscriptions, _get_client, log_delivery, has_been_delivered
-        from utils.helpers import get_today, format_date
-        import datetime
-        import sys
-        import os
-        import asyncio
-        
         db = await _get_client()
-        
-        # 1. Fetch user subscriptions
+
         subs = await get_user_subscriptions(db_path, user_id)
         if not subs:
             return
-            
         if title_id:
             subs = [s for s in subs if s["id"] == title_id]
-            
+
         for sub in subs:
             tid = sub["id"]
             title_name = sub["name"]
             slug = sub["slug"]
             category = sub.get("category", "Newspaper")
-            
+            safe_name = html_escape(title_name)
+
             confirm_text = (
-                f"✅ Subscribed to <b>{title_name}</b>!\n"
+                f"✅ Subscribed to <b>{safe_name}</b>!\n"
                 f"Whenever a new edition comes, we'll send it to you automatically! 🚀"
             )
-            
-            editions_resp = await db.table("editions")\
-                .select("*")\
-                .eq("title_id", tid)\
-                .eq("status", "delivered")\
-                .order("date", desc=True)\
-                .limit(1)\
-                .execute()
-                
+
+            editions_resp = await db.table("editions").select("*").eq("title_id", tid)\
+                .eq("status", "delivered").order("date", desc=True).limit(1).execute()
+
             if editions_resp.data:
                 latest_edition = editions_resp.data[0]
                 edition_id = latest_edition["id"]
                 edition_date = datetime.date.fromisoformat(latest_edition["date"])
-                file_id = latest_edition.get("file_id")
+                file_id = latest_edition.get("file_id") or ""
                 friendly_date = format_date(edition_date)
-                
-                # Check if already delivered to this user
                 already_delivered = await has_been_delivered(db_path, user_id, edition_id)
-                
+
                 if category == "Magazine":
-                    from scrapers.downmagaz_net import get_download_links
-                    post_urls = file_id.split(",")
                     links = []
-                    for post_url in post_urls:
+                    for post_url in (p for p in file_id.split(",") if p):
                         links.extend(await get_download_links(post_url))
-                    
                     if links:
-                        links_html = ""
-                        for domain, href in links:
-                            links_html += f"• <a href=\"{href}\">Download via {domain}</a>\n"
-                        
                         msg_text = (
                             f"{confirm_text}\n\n"
                             f"📖 <b>Latest Available Edition ({friendly_date}):</b>\n"
-                            f"{links_html}"
+                            f"{_magazine_links_html(links)}"
                         )
                     else:
                         msg_text = confirm_text
-                        
-                    if query:
-                        await query.edit_message_text(msg_text, parse_mode="HTML", disable_web_page_preview=True)
-                    elif update:
-                        await update.message.reply_text(msg_text, parse_mode="HTML", disable_web_page_preview=True)
-                    else:
-                        await bot.send_message(chat_id=user_id, text=msg_text, parse_mode="HTML", disable_web_page_preview=True)
-                        
+                    await _reply(query, update, bot, user_id, msg_text)
                     if not already_delivered:
                         await log_delivery(db_path, user_id, edition_id, "success")
                 else:
                     if not already_delivered:
-                        file_ids = file_id.split(",")
-                        if len(file_ids) == 1:
-                            caption_text = (
-                                f"✅ Subscribed to **{title_name}**!\n"
-                                f"Whenever a new edition comes, we'll send it to you automatically! 🚀\n\n"
-                                f"📰 Here is the latest available edition for {friendly_date}!"
+                        link = file_id.split(",")[0]
+                        msg_text = confirm_text
+                        if link.startswith(("http://", "https://")):
+                            msg_text += (
+                                f"\n\n📰 <b>Latest available edition ({friendly_date}):</b>\n"
+                                f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
                             )
-                            if query:
-                                try:
-                                    await query.delete_message()
-                                except Exception:
-                                    pass
-                            await bot.send_document(
-                                chat_id=user_id,
-                                document=file_ids[0],
-                                caption=caption_text,
-                                parse_mode="Markdown"
-                            )
-                        else:
-                            if query:
-                                await query.edit_message_text(confirm_text, parse_mode="HTML")
-                            elif update:
-                                await update.message.reply_text(confirm_text, parse_mode="HTML")
-                            else:
-                                await bot.send_message(chat_id=user_id, text=confirm_text, parse_mode="HTML")
-                                
-                            for idx, fid in enumerate(file_ids):
-                                part_suffix = f" (Part {idx+1}/{len(file_ids)})"
-                                await bot.send_document(
-                                    chat_id=user_id,
-                                    document=fid,
-                                    caption=f"📰 Here is the latest available edition of **{title_name}**{part_suffix} for {friendly_date}!",
-                                    parse_mode="Markdown"
-                                )
+                        await _reply(query, update, bot, user_id, msg_text)
                         await log_delivery(db_path, user_id, edition_id, "success")
                     else:
-                        if query:
-                            await query.edit_message_text(confirm_text, parse_mode="HTML")
-                        elif update:
-                            await update.message.reply_text(confirm_text, parse_mode="HTML")
-                        else:
-                            await bot.send_message(chat_id=user_id, text=confirm_text, parse_mode="HTML")
+                        await _reply(query, update, bot, user_id, confirm_text)
             else:
-                # No edition in the DB yet! Let's trigger a background scrape for this title
-                status_text = (
-                    f"✅ Subscribed to <b>{title_name}</b>!\n"
+                # No edition stored yet — scrape this one title in-process and
+                # deliver when it lands (no fragile subprocess, no lost task).
+                await _reply(
+                    query, update, bot, user_id,
+                    f"✅ Subscribed to <b>{safe_name}</b>!\n"
                     f"Whenever a new edition comes, we'll send it to you automatically! 🚀\n\n"
                     f"⏳ <b>Scraping in progress...</b>\n"
-                    f"We are fetching the latest edition from the web. It will be delivered here shortly!"
+                    f"We are fetching the latest edition from the web. It will be delivered here shortly!",
                 )
-                if query:
-                    await query.edit_message_text(status_text, parse_mode="HTML")
-                elif update:
-                    await update.message.reply_text(status_text, parse_mode="HTML")
-                else:
-                    await bot.send_message(chat_id=user_id, text=status_text, parse_mode="HTML")
-                
-                python_exe = sys.executable
-                script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "run_scrapers.py")
-                script_path = os.path.abspath(script_path)
-                
-                async def run_bg_proc(p_exe, s_path, t_slug, t_id, u_id, u_db_path, t_category, t_name, t_bot):
-                    """Background scraper task. All variables passed explicitly to avoid closure bugs."""
-                    try:
-                        proc = await asyncio.create_subprocess_exec(
-                            p_exe, s_path, t_slug,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        stdout, stderr = await proc.communicate()
-                        logger.info("[BG Scrape %s] Finished. Exit code: %s", t_slug, proc.returncode)
-                        if proc.returncode == 0:
-                            db = await _get_client()
-                            editions_resp = await db.table("editions")\
-                                .select("*")\
-                                .eq("title_id", t_id)\
-                                .eq("status", "delivered")\
-                                .order("date", desc=True)\
-                                .limit(1)\
-                                .execute()
-                                
-                            if editions_resp.data:
-                                latest_edition = editions_resp.data[0]
-                                edition_id = latest_edition["id"]
-                                edition_date = datetime.date.fromisoformat(latest_edition["date"])
-                                file_id = latest_edition.get("file_id")
-                                
-                                if not await has_been_delivered(u_db_path, u_id, edition_id):
-                                    friendly_date = format_date(edition_date)
-                                    if t_category == "Magazine":
-                                        from scrapers.downmagaz_net import get_download_links
-                                        post_urls = file_id.split(",")
-                                        links = []
-                                        for post_url in post_urls:
-                                            links.extend(await get_download_links(post_url))
-                                        if links:
-                                            links_html = ""
-                                            for domain, href in links:
-                                                links_html += f'• <a href="{href}">Download via {domain}</a>\n'
-                                            msg_text = (
-                                                f"📖 <b>Latest Available Edition ({friendly_date}):</b>\n"
-                                                f"{links_html}"
-                                            )
-                                            await t_bot.send_message(
-                                                chat_id=u_id,
-                                                text=msg_text,
-                                                parse_mode="HTML",
-                                                disable_web_page_preview=True
-                                            )
-                                        await log_delivery(u_db_path, u_id, edition_id, "success")
-                                    else:
-                                        file_ids = file_id.split(",")
-                                        for idx, fid in enumerate(file_ids):
-                                            part_suffix = f" (Part {idx+1}/{len(file_ids)})" if len(file_ids) > 1 else ""
-                                            await t_bot.send_document(
-                                                chat_id=u_id,
-                                                document=fid,
-                                                caption=f"📰 Here is the latest available edition of **{t_name}**{part_suffix} for {friendly_date}!",
-                                                parse_mode="Markdown"
-                                            )
-                                        await log_delivery(u_db_path, u_id, edition_id, "success")
-                        else:
-                            logger.warning("[BG Scrape %s] Stderr: %s", t_slug, stderr.decode())
-                    except Exception as ex:
-                        logger.error("[BG Scrape %s] Process launch failed: %s", t_slug, ex)
-                        
-                task = asyncio.create_task(run_bg_proc(
-                    python_exe, script_path, slug,
-                    tid, user_id, db_path, category, title_name, bot
+                _track_task(asyncio.create_task(
+                    _scrape_and_deliver_one(bot, slug, tid, user_id, category, title_name)
                 ))
-                # Store reference to prevent garbage collection
-                if "_bg_scrape_tasks" not in (context_user_data := {}):
-                    context_user_data["_bg_scrape_tasks"] = []
-                context_user_data["_bg_scrape_tasks"].append(task)
 
-                
     except Exception as e:
-        logger.error(f"Error in deliver_latest_editions_on_subscribe: {e}")
+        logger.error("Error in deliver_latest_editions_on_subscribe: %s", e)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -502,12 +466,11 @@ async def handle_cat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ── Message: Text search query received ──────────────────────────────────────
 
-# ── Message: Text search query received ──────────────────────────────────────
-
 async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query_text = update.message.text.strip()
+    safe_query = html_escape(query_text)
     db_path = context.bot_data["config"].db_path
-    
+
     status_msg = await update.message.reply_text("🔍 Searching for matching magazines... ⏳")
     
     # 1. Search titles table in DB for matching magazines
@@ -556,7 +519,7 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
     
     if not merged_results:
         await update.message.reply_text(
-            f"❌ No matching magazines found for <b>{query_text}</b>.\n"
+            f"❌ No matching magazines found for <b>{safe_query}</b>.\n"
             "Please check the spelling and try again:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[
@@ -582,7 +545,7 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
     ])
     
     await update.message.reply_text(
-        f"🔍 <b>Search Results for '{query_text}'</b>:\n"
+        f"🔍 <b>Search Results for '{safe_query}'</b>:\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Select the magazine you want to subscribe to:",
         parse_mode="HTML",
@@ -676,192 +639,6 @@ subscribe_conversation_handler = ConversationHandler(
         ],
     },
     fallbacks=[
-        CommandHandler("cancel", handle_done_callback),
         CallbackQueryHandler(handle_done_callback, pattern="^done$"),
     ],
 )
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  /sub <title_name> — Quick subscribe
-# ═════════════════════════════════════════════════════════════════════════════
-
-async def sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fuzzy-match a title name and subscribe."""
-    if not context.args:
-        await update.message.reply_text(
-            "📌 <b>Usage:</b> <code>/sub title name</code>\n\n"
-            "Example: <code>/sub Times of India</code>",
-            parse_mode="HTML",
-        )
-        return
-
-    query_text = " ".join(context.args)
-    user = update.effective_user
-    user_id = user.id
-    db_path = context.bot_data["config"].db_path
-    
-    await register_user(
-        db_path=db_path,
-        user_id=user_id,
-        username=user.username or "",
-        first_name=user.first_name or "",
-    )
-    
-    all_titles = await get_all_titles(db_path)
-    matches = fuzzy_match_title(query_text, all_titles)
-
-    if len(matches) == 1:
-        title, score = matches[0]
-        already = await is_subscribed(db_path, user_id, title["id"])
-        if already:
-            await update.message.reply_text(
-                f"ℹ️ You're already subscribed to <b>{title['name']}</b>.",
-                parse_mode="HTML",
-            )
-            return
-        await subscribe(db_path, user_id, title["id"])
-        # Deliver latest edition immediately (will scrape if not in DB) and send combined confirmation message
-        await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title["id"], update=update)
-        return
-
-    if len(matches) > 1:
-        buttons = [
-            [InlineKeyboardButton(
-                f"📰 {t['name']}",
-                callback_data=f"quicksub:{t['id']}",
-            )]
-            for t, _score in matches[:3]
-        ]
-        await update.message.reply_text(
-            f"🔍 Multiple matches for <b>{query_text}</b>:\n"
-            "Tap the one you meant:",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-        return
-
-    await update.message.reply_text(
-        f"❌ No title matching <b>{query_text}</b> found.\n"
-        "Use /subscribe to browse categories and search magazines.",
-        parse_mode="HTML",
-    )
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  /unsub <title_name> — Quick unsubscribe
-# ═════════════════════════════════════════════════════════════════════════════
-
-async def unsub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fuzzy-match a title name and unsubscribe."""
-    if not context.args:
-        await update.message.reply_text(
-            "📌 <b>Usage:</b> <code>/unsub title name</code>\n\n"
-            "Example: <code>/unsub Times of India</code>",
-            parse_mode="HTML",
-        )
-        return
-
-    query_text = " ".join(context.args)
-    user = update.effective_user
-    user_id = user.id
-    db_path = context.bot_data["config"].db_path
-    
-    await register_user(
-        db_path=db_path,
-        user_id=user_id,
-        username=user.username or "",
-        first_name=user.first_name or "",
-    )
-    
-    all_titles = await get_all_titles(db_path)
-    matches = fuzzy_match_title(query_text, all_titles)
-
-    if len(matches) == 1:
-        title, score = matches[0]
-        if not await is_subscribed(db_path, user_id, title["id"]):
-            await update.message.reply_text(
-                f"ℹ️ You're not subscribed to <b>{title['name']}</b>.",
-                parse_mode="HTML",
-            )
-            return
-        await unsubscribe(db_path, user_id, title["id"])
-        await update.message.reply_text(
-            f"🗑️ Unsubscribed from <b>{title['name']}</b>.\n"
-            "You won't receive this title anymore.",
-            parse_mode="HTML",
-        )
-        return
-
-    if len(matches) > 1:
-        buttons = [
-            [InlineKeyboardButton(
-                f"📰 {t['name']}",
-                callback_data=f"quickunsub:{t['id']}",
-            )]
-            for t, _score in matches[:3]
-        ]
-        await update.message.reply_text(
-            f"🔍 Multiple matches for <b>{query_text}</b>:\n"
-            "Tap the one you meant:",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-        return
-
-    await update.message.reply_text(
-        f"❌ No title matching <b>{query_text}</b> found.\n"
-        "Use /subscriptions to see your active subscriptions.",
-        parse_mode="HTML",
-    )
-
-
-async def handle_quicksub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    parts = query.data.split(":")
-    title_id = int(parts[1])
-    user_id = update.effective_user.id
-    db_path = context.bot_data["config"].db_path
-    
-    all_titles = await get_all_titles(db_path)
-    title = next((t for t in all_titles if t["id"] == title_id), None)
-    title_name = title["name"] if title else f"Title #{title_id}"
-
-    already = await is_subscribed(db_path, user_id, title_id)
-    if already:
-        await query.edit_message_text(
-            f"ℹ️ You're already subscribed to <b>{title_name}</b>.",
-            parse_mode="HTML",
-        )
-        return
-
-    await subscribe(db_path, user_id, title_id)
-    # Deliver latest edition immediately (will scrape if not in DB) and send combined confirmation message
-    await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title_id, query=query)
-
-
-async def handle_quickunsub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    parts = query.data.split(":")
-    title_id = int(parts[1])
-    user_id = update.effective_user.id
-    db_path = context.bot_data["config"].db_path
-
-    all_titles = await get_all_titles(db_path)
-    title = next((t for t in all_titles if t["id"] == title_id), None)
-    title_name = title["name"] if title else f"Title #{title_id}"
-
-    already = await is_subscribed(db_path, user_id, title_id)
-    if not already:
-        await query.edit_message_text(
-            f"ℹ️ You're not subscribed to <b>{title_name}</b>.",
-            parse_mode="HTML",
-        )
-        return
-
-    await unsubscribe(db_path, user_id, title_id)
-    await query.edit_message_text(
-        f"🗑️ Unsubscribed from <b>{title_name}</b>.\n"
-        "You won't receive this title anymore.",
-        parse_mode="HTML",
-    )

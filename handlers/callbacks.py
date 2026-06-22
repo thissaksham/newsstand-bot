@@ -12,8 +12,6 @@ from .subscribe import (
     handle_toggle_callback,
     handle_page_callback,
     handle_done_callback,
-    handle_quicksub_callback,
-    handle_quickunsub_callback,
     handle_cat_callback,
     handle_submag_callback,
 )
@@ -29,8 +27,6 @@ _ROUTES: list[tuple[str, object]] = [
     ("toggle:",     handle_toggle_callback),
     ("page:",       handle_page_callback),
     ("unsub:",      handle_unsub_callback),
-    ("quicksub:",   handle_quicksub_callback),
-    ("quickunsub:", handle_quickunsub_callback),
     ("done",        handle_done_callback),
 ]
 

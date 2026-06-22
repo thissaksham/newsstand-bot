@@ -4,8 +4,9 @@ General-purpose utility functions for the Newsstand Bot.
 
 from __future__ import annotations
 
+import html as _html
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Sequence, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -152,3 +153,40 @@ def format_file_size(size_bytes: int | float) -> str:
 def get_today(timezone: str = "Asia/Kolkata") -> date:
     """Return today's date in the given timezone."""
     return datetime.now(ZoneInfo(timezone)).date()
+
+
+# ── HTML safety for Telegram parse_mode="HTML" ──────────────────────
+
+def html_escape(text: object) -> str:
+    """Escape arbitrary text so it is safe inside Telegram HTML messages.
+
+    Telegram rejects a message outright (BadRequest: can't parse entities)
+    if dynamic content contains an unescaped ``&``, ``<`` or ``>``. Magazine
+    titles, scraped link domains and user search strings all flow into HTML
+    messages, so every such value must pass through here first.
+    """
+    return _html.escape("" if text is None else str(text), quote=True)
+
+
+# ── edition recency ─────────────────────────────────────────────────
+
+def is_recent_edition(
+    edition_date: date,
+    today: date,
+    category: str = "Newspaper",
+    *,
+    days: int = 3,
+) -> bool:
+    """Whether an edition is fresh enough to actively push to subscribers.
+
+    Magazines often carry a month-start date (e.g. ``2026-06-01`` for the
+    "June 2026" issue), so they count as recent for the whole calendar month.
+    Newspapers (and everything else) use a short day window. This guards both
+    the live magazine alert path and the catch-up safety net from spamming
+    subscribers with historical back-issues.
+    """
+    if category == "Magazine" and (
+        edition_date.year == today.year and edition_date.month == today.month
+    ):
+        return True
+    return edition_date >= today - timedelta(days=days)

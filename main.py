@@ -2,14 +2,22 @@
 Newsstand Bot — Main Entry Point
 
 Starts the Telegram bot with all handlers, initializes the database,
-and configures the keep-alive self-ping (for Render free-tier).
+and (in webhook/Render mode) configures the keep-alive self-ping plus an
+in-process magazine scraper.
 
-Scraping is handled externally by GitHub Actions (run_scrapers.py),
-NOT by an in-process scheduler — this avoids overlap and ensures
-the bot process stays lightweight and responsive.
+Both newspapers and magazines are link-shares — the bot sends the source
+download link (e.g. Google Drive) rather than re-hosting PDFs, so there is no
+Telegram storage channel.
+
+Scraping:
+- Magazines are checked in-process on a short APScheduler interval so new
+  editions reach subscribers promptly.
+- Newspapers are scraped by GitHub Actions (run_scrapers.py); the in-process
+  catch-up step then forwards any new edition links to subscribers.
 """
 
 import asyncio
+import datetime
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
@@ -50,8 +58,7 @@ logger = logging.getLogger("newsstand")
 BOT_COMMANDS = [
     BotCommand("help", "Learn how to use me"),
     BotCommand("subscribe", "Subscribe to your favorite newspapers"),
-    BotCommand("unsubscribe", "Unsubscribe from newspapers"),
-    BotCommand("subscriptions", "View your active subscriptions"),
+    BotCommand("subscriptions", "View & manage your subscriptions"),
     BotCommand("get", "Get any newspaper from the archives"),
 ]
 
@@ -70,6 +77,24 @@ async def keep_alive_ping(url: str):
         except Exception as e:
             logger.warning(f"Keep-alive ping to {url} failed: {e}")
         await asyncio.sleep(600)  # Ping every 10 minutes
+
+
+# ─── In-process magazine scraper ───────────────────────────────────────────
+
+async def scheduled_magazine_scrape(application: Application) -> None:
+    """Run a lightweight magazine-only scrape+deliver cycle in-process.
+
+    Magazines just need HTTP fetches and link messages (no PDF download/upload),
+    so running them on the always-on bot every few minutes makes delivery timely
+    without the latency and skipped-run unreliability of GitHub Actions cron.
+    The trailing catch-up step also forwards any newspaper editions that the
+    GitHub Actions runner has uploaded but not yet delivered.
+    """
+    from run_scrapers import run_scrape_cycle
+    try:
+        await run_scrape_cycle(application.bot, only_categories={"Magazine"})
+    except Exception:
+        logger.exception("Scheduled magazine scrape failed")
 
 
 # ─── Lifecycle Hooks ──────────────────────────────────────────────────────
@@ -96,14 +121,46 @@ async def post_init(application: Application) -> None:
         logger.info(f"Starting keep-alive self-ping for {webhook_url}")
         task = asyncio.create_task(keep_alive_ping(webhook_url))
         application.bot_data["_keep_alive_task"] = task
-        
+
+    # 5. Start the in-process magazine scraper (Render / webhook mode only).
+    #    Local polling dev runs rely on `python run_scrapers.py` instead.
+    if webhook_url:
+        try:
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+            interval = int(os.environ.get("MAGAZINE_SCRAPE_INTERVAL_MIN", "15"))
+            scheduler = AsyncIOScheduler(timezone="UTC")
+            scheduler.add_job(
+                scheduled_magazine_scrape,
+                trigger="interval",
+                minutes=interval,
+                args=[application],
+                id="magazine_scrape",
+                max_instances=1,   # never stack runs
+                coalesce=True,      # collapse missed runs into one
+                next_run_time=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=90),
+            )
+            scheduler.start()
+            application.bot_data["_scheduler"] = scheduler
+            logger.info("Started in-process magazine scraper (every %d min).", interval)
+        except Exception:
+            logger.exception("Failed to start in-process magazine scheduler")
+
     logger.info("Bot initialized successfully!")
 
 
 async def post_shutdown(application: Application) -> None:
     """Cleanup on shutdown."""
     logger.info("Shutting down...")
-    
+
+    # Stop the in-process scheduler if running
+    scheduler = application.bot_data.get("_scheduler")
+    if scheduler is not None:
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            pass
+
     # Cancel keep-alive task if running
     keep_alive_task = application.bot_data.get("_keep_alive_task")
     if keep_alive_task and not keep_alive_task.done():
