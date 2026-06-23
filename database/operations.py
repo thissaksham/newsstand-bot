@@ -362,12 +362,20 @@ async def get_pending_scrapes(db_path: str, scrape_date: date, max_attempts: int
     pending = []
     for t in active_titles:
         tid = t["id"]
+
+        # Magazines can publish a new issue at any hour, so always re-check them
+        # (the processed-post-URL dedup prevents re-delivery). Only newspapers
+        # use the once-per-day "found" gate below.
+        if t.get("category") == "Magazine":
+            pending.append(t)
+            continue
+
         st = status_map.get(tid)
         if not st:
             pending.append(t)
         elif st["status"] in ("pending", "failed") and st["attempts"] < max_attempts:
             pending.append(t)
-            
+
     return pending
 
 async def get_available_dates(db_path: str, title_id: int) -> list[str]:

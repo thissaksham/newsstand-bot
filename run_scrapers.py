@@ -129,6 +129,7 @@ async def send_edition_to_user(
     async def _do_send() -> None:
         if category == "Magazine":
             # file_id holds comma-separated downmagaz post URLs.
+            sent_any = False
             for post_url in file_id.split(","):
                 links = await get_download_links(post_url)
                 if not links:
@@ -147,6 +148,11 @@ async def send_edition_to_user(
                     chat_id=user_id, text=msg_text,
                     parse_mode="HTML", disable_web_page_preview=True,
                 )
+                sent_any = True
+            if not sent_any:
+                # Post has no download links yet — fail so it's retried next
+                # cycle instead of being silently marked delivered.
+                raise RuntimeError(f"No download links available yet for {title_name}")
         else:
             # file_id holds the newspaper's direct source download link.
             link = file_id.split(",")[0]
@@ -204,13 +210,12 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
 
     if not posts:
         logger.info("[%s] No posts found on tag page.", name)
-        await upsert_scrape_status("", title_id, today, status="failed", increment_attempts=True)
+        # Keep magazines pollable (don't let attempts cap them out): a tag page
+        # can be empty transiently, so just retry next cycle.
+        await upsert_scrape_status("", title_id, today, status="pending", increment_attempts=False)
         return
 
     logger.info("[%s] Found %d posts on tag page.", name, len(posts))
-
-    safe_name = html_escape(name)
-    success_any = False
 
     for post in posts:
         post_title = post["title"]
@@ -229,71 +234,30 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
         if post_url in processed_urls:
             continue
 
-        logger.info("[%s] Found post: %s for edition date %s", name, post_title, edition_date)
+        logger.info("[%s] Recording edition: %s (%s)", name, post_title, edition_date)
 
-        # Magazines carry month-start dates ("June 2026" -> 2026-06-01), so a
-        # whole-month window decides whether this is a live alert vs an old
-        # back-issue we should record but not announce.
-        is_new_edition = is_recent_edition(edition_date, today, "Magazine")
-
-        links = await get_download_links(post_url)
-        if not links:
-            logger.info("[%s] No download links found for %s. Skipping.", name, post_title)
-            continue
-
-        subscribers = await get_subscribers_for_title("", title_id)
-        delivered_users = []
-        if subscribers and is_new_edition:
-            links_html = "".join(
-                f'• <a href="{html_escape(href)}">Download via {html_escape(domain)}</a>\n'
-                for domain, href in links
-            )
-            msg_text = (
-                f"📖 <b>New Magazine Alert!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"New edition of <b>{safe_name}</b> is available:\n"
-                f"👉 <b>{html_escape(post_title)}</b>\n\n"
-                f"Download Links:\n{links_html}"
-            )
-
-            for user_id in subscribers:
-                try:
-                    await bot.send_message(
-                        chat_id=user_id, text=msg_text,
-                        parse_mode="HTML", disable_web_page_preview=True,
-                    )
-                    delivered_users.append(user_id)
-                    logger.info("[%s] Delivered to %s", name, user_id)
-                except Exception as e:
-                    logger.error("[%s] Failed to deliver to %s: %s", name, user_id, e)
-        elif not is_new_edition:
-            logger.info("[%s] Recording old historical edition %s (date: %s) without alerting.", name, post_title, edition_date)
-
-        # Mark this post_url as processed on the edition row.
+        # Only RECORD the post URL against the edition here — delivery is done by
+        # catch_up_deliveries(), which sends the single LATEST recent edition to
+        # each subscriber. Per-post delivery here meant a daily magazine (every
+        # post matches when version is None, and every same-month post counts as
+        # "new") tried to send dozens of messages per run, tripping Telegram rate
+        # limits so the real new edition never got through.
         if not edition:
             new_edition_id = await add_edition(
                 db_path="", title_id=title_id, edition_date=edition_date,
                 download_url=post_url, status="pending",
             )
             await update_edition_status(db_path="", edition_id=new_edition_id, status="delivered", file_id=post_url)
-            edition_id = new_edition_id
         else:
             new_file_id = f"{edition.get('file_id') or ''},{post_url}".strip(",")
             await update_edition_status(db_path="", edition_id=edition["id"], status="delivered", file_id=new_file_id)
-            edition_id = edition["id"]
 
-        # Log delivery only for editions we actually announced.
-        if subscribers and is_new_edition:
-            for user_id in subscribers:
-                status = "success" if user_id in delivered_users else "failed"
-                await log_delivery("", user_id, edition_id, status)
-
-        success_any = True
-
-    if success_any:
-        await upsert_scrape_status("", title_id, today, status="found", increment_attempts=True)
-    else:
-        await upsert_scrape_status("", title_id, today, status="pending", increment_attempts=False)
+    # Magazines are never marked "found": unlike daily newspapers, a new issue
+    # can drop at any hour, so we keep polling every cycle (every ~15 min).
+    # Re-delivery is prevented by the processed-post-URL dedup above, not by the
+    # scrape status — marking "found" here is what made same-day new editions
+    # get skipped until the next day.
+    await upsert_scrape_status("", title_id, today, status="pending", increment_attempts=False)
 
 
 async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, newspaper_date: date):
