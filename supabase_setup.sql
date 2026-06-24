@@ -79,3 +79,17 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_title   ON subscriptions(title_id);
 CREATE INDEX IF NOT EXISTS idx_delivery_log_user     ON delivery_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_delivery_log_edition  ON delivery_log(edition_id);
 CREATE INDEX IF NOT EXISTS idx_scrape_status_date    ON daily_scrape_status(date);
+
+-- ── Row-Level Security ──────────────────────────────────────────────────────
+-- The bot connects with the SERVICE ROLE key, which bypasses RLS, so it keeps
+-- full access. Enabling RLS with NO policies denies the public/anon key (and
+-- anyone who only has the project URL) — closing the "table publicly accessible"
+-- finding. If you ever add a client-side app, add explicit policies then.
+ALTER TABLE public.users               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.titles              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.editions            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.subscriptions       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_log        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.daily_scrape_status ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.packs       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.pack_titles ENABLE ROW LEVEL SECURITY;
