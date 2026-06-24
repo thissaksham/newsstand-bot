@@ -37,7 +37,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from telegram import Bot
-from telegram.error import RetryAfter
+from telegram.error import RetryAfter, Forbidden
 from dotenv import load_dotenv
 
 from config import Config
@@ -153,6 +153,10 @@ async def send_edition_to_user(
                     parse_mode="HTML", disable_web_page_preview=True,
                 )
                 sent_any = True
+                # One message per edition — if file_id holds several post URLs
+                # (e.g. a version-less subscription matching regional variants),
+                # don't fire a message for each and flood the subscriber.
+                break
             if not sent_any:
                 # Post has no download links yet — fail so it's retried next
                 # cycle instead of being silently marked delivered.
@@ -180,11 +184,22 @@ async def send_edition_to_user(
         await _do_send()
         await log_delivery("", user_id, edition_id, "success")
         return True
+    except Forbidden as e:
+        # User blocked the bot / deactivated / never started a chat — unreachable.
+        # Record it as done so catch-up doesn't retry them every cycle forever
+        # (which otherwise bloats delivery_log and wastes API calls).
+        logger.warning("[%s] User %s is unreachable (%s) — not retrying.", title_name, user_id, e)
+        await log_delivery("", user_id, edition_id, "success")
+        return True
     except RetryAfter as e:
         logger.warning("Rate limited delivering to %s. Sleeping %ss...", user_id, e.retry_after)
         await asyncio.sleep(e.retry_after)
         try:
             await _do_send()
+            await log_delivery("", user_id, edition_id, "success")
+            return True
+        except Forbidden as ex:
+            logger.warning("[%s] User %s unreachable on retry (%s) — not retrying.", title_name, user_id, ex)
             await log_delivery("", user_id, edition_id, "success")
             return True
         except Exception as ex:
