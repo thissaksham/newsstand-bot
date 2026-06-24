@@ -73,6 +73,25 @@ def format_date(d: date) -> str:
     return d.strftime("%d %b %Y")
 
 
+def magazine_date_label(title: str, edition_date: date) -> str:
+    """Button label for a magazine issue.
+
+    Dated issues (dailies/weeklies) get a full date — ``'24 Jun 2026'``. Monthly
+    issues carry a month-start date, so they collapse to ``'Jun 2026'``. Since a
+    *daily* can also land on the 1st, day-1 dates only collapse when the title
+    has no explicit day component.
+    """
+    if edition_date.day != 1:
+        return format_date(edition_date)
+    months = r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+    has_explicit_day = bool(
+        re.search(r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}", title)                         # 06.01.2026
+        or re.search(rf"\b\d{{1,2}}\s+(?:{months})", title, re.IGNORECASE)            # "1 June"
+        or re.search(rf"(?:{months})[a-z]*\.?\s+\d{{1,2}}\b", title, re.IGNORECASE)   # "June 1"
+    )
+    return format_date(edition_date) if has_explicit_day else edition_date.strftime("%b %Y")
+
+
 # ── tracker row (for /mystuff style views) ──────────────────────────
 
 def format_tracker_row(

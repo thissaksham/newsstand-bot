@@ -114,10 +114,10 @@ async def api_magazine_search(q: str = Query(..., min_length=1)):
     ]
 
 
-@app.get("/api/magazines/latest")
-async def api_magazine_latest(tag_url: str = Query(...), version: str | None = Query(None)):
-    """Return the latest matching edition's download links — i.e. the version the
-    bot would deliver for this magazine."""
+@app.get("/api/magazines/editions")
+async def api_magazine_editions(tag_url: str = Query(...), version: str | None = Query(None)):
+    """List a magazine's available issues (version-filtered, newest first) — the
+    same data the bot's /get magazine flow would page through."""
     try:
         posts = await scrape_magazine_tag(tag_url)
     except Exception as e:
@@ -125,18 +125,22 @@ async def api_magazine_latest(tag_url: str = Query(...), version: str | None = Q
         raise HTTPException(status_code=502, detail=f"Scrape failed: {e}")
 
     matching = [p for p in posts if matches_version(p["title"], version)]
-    if not matching:
-        return {"found": False}
+    matching.sort(key=lambda p: p["date"], reverse=True)
+    return [
+        {"title": p["title"], "date": format_date(p["date"]), "url": p["url"]}
+        for p in matching
+    ]
 
-    latest = max(matching, key=lambda p: p["date"])
-    links = await get_download_links(latest["url"])
-    return {
-        "found": True,
-        "title": latest["title"],
-        "date": format_date(latest["date"]),
-        "post_url": latest["url"],
-        "links": [{"domain": d, "href": h} for d, h in links],
-    }
+
+@app.get("/api/magazines/links")
+async def api_magazine_links(post_url: str = Query(...)):
+    """Download links for one specific magazine issue (post)."""
+    try:
+        links = await get_download_links(post_url)
+    except Exception as e:
+        logger.exception("Magazine link scrape failed")
+        raise HTTPException(status_code=502, detail=f"Scrape failed: {e}")
+    return {"links": [{"domain": d, "href": h} for d, h in links]}
 
 
 if __name__ == "__main__":

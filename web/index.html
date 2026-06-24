@@ -130,6 +130,8 @@
 
 <script>
   let magSearchResults = [];
+  let magEditions = [];      // issues of the currently-picked magazine
+  let magCurrentName = '';   // its display name
 
   function setActiveCat(cat) {
     document.querySelectorAll('.cat').forEach(b =>
@@ -239,27 +241,57 @@
     }
   }
 
+  // Step 4: pick a magazine -> load & list its available issues (by date).
   async function selectMagazine(idx) {
     const m = magSearchResults[idx];
     if (!m) return;
     const out = document.getElementById('mag-result');
-    out.innerHTML = `<p class="muted"><span class="spinner"></span>Fetching latest version of <b>${escapeHtml(m.edition_name)}</b>…</p>`;
-    let url = `/api/magazines/latest?tag_url=${encodeURIComponent(m.tag_url)}`;
+    out.innerHTML = `<p class="muted"><span class="spinner"></span>Loading issues of <b>${escapeHtml(m.edition_name)}</b>…</p>`;
+    let url = `/api/magazines/editions?tag_url=${encodeURIComponent(m.tag_url)}`;
     if (m.version) url += `&version=${encodeURIComponent(m.version)}`;
     try {
-      const data = await fetchJson(url);
-      if (!data.found) {
-        out.innerHTML = `<p class="muted">📭 No downloadable edition found for <b>${escapeHtml(m.edition_name)}</b>.</p>`;
+      magEditions = await fetchJson(url);
+      magCurrentName = m.edition_name;
+      if (!magEditions.length) {
+        out.innerHTML = `<p class="muted">📭 No issues found for <b>${escapeHtml(m.edition_name)}</b>.</p>`;
         return;
       }
+      renderEditions();
+    } catch (e) {
+      out.innerHTML = `<p class="error">⚠️ Request failed: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  function renderEditions() {
+    const out = document.getElementById('mag-result');
+    const items = magEditions.map((p, i) =>
+      `<button class="mag-item" onclick="selectEdition(${i})">
+         <span>📅 ${escapeHtml(p.date)}</span>
+         <span class="chip">${escapeHtml(p.title)}</span>
+       </button>`
+    ).join('');
+    out.innerHTML = `
+      <h3 style="margin:4px 0 12px">${escapeHtml(magCurrentName)} — ${magEditions.length} issue(s)</h3>
+      <div class="mag-results">${items}</div>`;
+  }
+
+  // Step 5: pick an issue -> show its download links.
+  async function selectEdition(idx) {
+    const p = magEditions[idx];
+    if (!p) return;
+    const out = document.getElementById('mag-result');
+    out.innerHTML = `<p class="muted"><span class="spinner"></span>Fetching links for <b>${escapeHtml(p.date)}</b>…</p>`;
+    try {
+      const data = await fetchJson(`/api/magazines/links?post_url=${encodeURIComponent(p.url)}`);
       const links = (data.links || []).map(l =>
         `<a class="dl" href="${escapeHtml(l.href)}" target="_blank" rel="noopener">⬇️ Download via ${escapeHtml(l.domain)}</a>`
       ).join('');
       out.innerHTML = `
         <div class="res-card">
-          <h3>${escapeHtml(data.title)}</h3>
-          <div class="date">Latest available · ${escapeHtml(data.date)}</div>
-          ${links || '<p class="muted">No external download links found on the post.</p>'}
+          <button class="mag-item" style="margin-bottom:12px" onclick="renderEditions()">⬅️ Back to issues</button>
+          <h3>${escapeHtml(p.title)}</h3>
+          <div class="date">${escapeHtml(p.date)}</div>
+          ${links || '<p class="muted">No external download links found on this issue.</p>'}
         </div>`;
     } catch (e) {
       out.innerHTML = `<p class="error">⚠️ Request failed: ${escapeHtml(e.message)}</p>`;

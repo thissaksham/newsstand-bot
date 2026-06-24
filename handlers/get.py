@@ -1,11 +1,11 @@
 """
 Newsstand Bot — /get handler
 
-Interactive "fetch any edition" flow that mirrors the /subscribe browser, but
-the final step is a date instead of a subscribe toggle. It does NOT read the
-archive — it looks up the chosen title+date's download link live (reusing the
-scraper modules' ``find_download_link``) and sends the link, the same way a
-normal subscription delivery does.
+Interactive "fetch any edition" browser. Pick a newspaper **language → title →
+date**, or **search magazines → pick one → pick an issue**. Nothing comes from an
+archive: newspaper dates resolve to a live link via the scrapers'
+``find_download_link``, and magazine issues come from a live downmagaz tag scrape
+(``scrape_magazine_tag`` + ``get_download_links``). Everything is link-based.
 """
 
 import importlib
@@ -18,18 +18,25 @@ from telegram.ext import (
     ConversationHandler,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
 )
 
 from config import Config
-from utils.helpers import format_date, get_today, html_escape
+from utils.helpers import format_date, get_today, html_escape, magazine_date_label
+from scrapers.downmagaz_net import (
+    search_magazines, scrape_magazine_tag, matches_version, get_download_links,
+)
 
 logger = logging.getLogger(__name__)
 
 # ── Conversation States ──────────────────────────────────────────────────────
-SELECT_LANGUAGE, SELECT_TITLE, SELECT_DATE = range(3)
+(SELECT_LANGUAGE, SELECT_TITLE, SELECT_DATE,
+ AWAIT_MAG_NAME, SELECT_MAGAZINE, SELECT_EDITION) = range(6)
 
 TITLES_PER_PAGE = 8
 DATES_PER_PAGE = 8
+EDITIONS_PER_PAGE = 8
 DATE_WINDOW_DAYS = 30  # how far back the date picker can go
 
 LANG_FLAGS: dict[str, str] = {
@@ -60,11 +67,12 @@ async def get_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         [InlineKeyboardButton(f"{_flag(lang)} {lang.title()}", callback_data=f"get_lang_{lang}")]
         for lang in languages
     ]
+    buttons.append([InlineKeyboardButton("📖 Magazines", callback_data="get_magazines")])
 
     await update.message.reply_text(
-        "📰 <b>Get a Newspaper</b>\n"
+        "📰 <b>Get an Edition</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Select a language:",
+        "Pick a newspaper language, or search magazines:",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML",
     )
@@ -246,6 +254,175 @@ async def get_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ConversationHandler.END
 
 
+# ── Magazines: search → pick magazine → pick issue → links ───────────────────
+
+async def get_magazines_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "📖 <b>Get a Magazine</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Type the name of the magazine you want (e.g. <i>The Economist</i>):",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")]]),
+    )
+    return AWAIT_MAG_NAME
+
+
+async def handle_get_mag_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query_text = update.message.text.strip()
+    safe_query = html_escape(query_text)
+    status = await update.message.reply_text("🔍 Searching… ⏳")
+    try:
+        results = await search_magazines(query_text)
+    except Exception:
+        logger.exception("[/get] magazine search failed")
+        results = []
+    try:
+        await status.delete()
+    except Exception:
+        pass
+
+    if not results:
+        await update.message.reply_text(
+            f"❌ No magazines matched <b>{safe_query}</b>. Type another name:",
+            parse_mode="HTML",
+        )
+        return AWAIT_MAG_NAME
+
+    context.user_data["get_mag_results"] = results
+    buttons = []
+    for i, m in enumerate(results[:8]):
+        label = m["edition_name"]
+        countries = m.get("countries") or []
+        if countries:
+            label = f"{label} ({', '.join(countries)})"
+        buttons.append([InlineKeyboardButton(f"📖 {label}", callback_data=f"getmag_{i}")])
+    buttons.append([InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")])
+
+    await update.message.reply_text(
+        f"🔍 <b>Results for '{safe_query}'</b>:\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Pick a magazine:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+    return SELECT_MAGAZINE
+
+
+async def handle_get_mag_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    idx = int(query.data[len("getmag_"):])
+    results = context.user_data.get("get_mag_results", [])
+    if idx < 0 or idx >= len(results):
+        await query.edit_message_text("⌛ Session expired. Please run /get again.")
+        return ConversationHandler.END
+
+    m = results[idx]
+    await query.edit_message_text(f"⏳ Loading issues of <b>{html_escape(m['edition_name'])}</b>…", parse_mode="HTML")
+    try:
+        posts = await scrape_magazine_tag(m["tag_url"])
+    except Exception:
+        logger.exception("[/get] magazine tag scrape failed")
+        posts = []
+
+    issues = [p for p in posts if matches_version(p["title"], m.get("version"))]
+    issues.sort(key=lambda p: p["date"], reverse=True)
+    if not issues:
+        await query.edit_message_text(f"📭 No issues found for <b>{html_escape(m['edition_name'])}</b>.", parse_mode="HTML")
+        return ConversationHandler.END
+
+    context.user_data["get_mag_editions"] = issues
+    context.user_data["get_mag_name"] = m["edition_name"]
+    return await _show_mag_editions_page(query, context, 0)
+
+
+async def handle_get_mpage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    page = int(query.data[len("getmpage_"):])
+    return await _show_mag_editions_page(query, context, page)
+
+
+async def _show_mag_editions_page(query, context, page: int) -> int:
+    issues = context.user_data.get("get_mag_editions", [])
+    name = context.user_data.get("get_mag_name", "Magazine")
+    if not issues:
+        await query.edit_message_text("⌛ Session expired. Please run /get again.")
+        return ConversationHandler.END
+
+    total_pages = max(1, (len(issues) + EDITIONS_PER_PAGE - 1) // EDITIONS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * EDITIONS_PER_PAGE
+    page_issues = issues[start:start + EDITIONS_PER_PAGE]
+
+    buttons = [
+        [InlineKeyboardButton(magazine_date_label(p["title"], p["date"]), callback_data=f"getmed_{start + i}")]
+        for i, p in enumerate(page_issues)
+    ]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"getmpage_{page - 1}"))
+    if start + EDITIONS_PER_PAGE < len(issues):
+        nav.append(InlineKeyboardButton("Older ➡️", callback_data=f"getmpage_{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")])
+
+    await query.edit_message_text(
+        f"📖 <b>{html_escape(name)}</b>  <i>(page {page + 1}/{total_pages})</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Choose an issue to fetch:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+    return SELECT_EDITION
+
+
+async def handle_get_edition_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer("Fetching… ⏳")
+    idx = int(query.data[len("getmed_"):])
+    issues = context.user_data.get("get_mag_editions", [])
+    name = context.user_data.get("get_mag_name", "Magazine")
+    if idx < 0 or idx >= len(issues):
+        await query.edit_message_text("⌛ Session expired. Please run /get again.")
+        return ConversationHandler.END
+
+    issue = issues[idx]
+    safe_name = html_escape(name)
+    label = magazine_date_label(issue["title"], issue["date"])
+    await query.edit_message_text(f"⏳ Fetching <b>{safe_name}</b> — {html_escape(label)}…", parse_mode="HTML")
+
+    try:
+        links = await get_download_links(issue["url"])
+    except Exception as e:
+        logger.exception("[/get] magazine link scrape failed")
+        await query.edit_message_text(f"❌ Fetch failed: {html_escape(str(e))}", parse_mode="HTML")
+        return ConversationHandler.END
+
+    if not links:
+        await query.edit_message_text(
+            f"📭 No download links available yet for <b>{html_escape(issue['title'])}</b>. Try again later.",
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    links_html = "".join(
+        f'• <a href="{html_escape(href)}">Download via {html_escape(domain)}</a>\n'
+        for domain, href in links
+    )
+    await query.edit_message_text(
+        f"📖 <b>{safe_name}</b> — {html_escape(label)}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Download Links:\n{links_html}",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+    return ConversationHandler.END
+
+
 async def get_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -258,6 +435,7 @@ get_conversation_handler = ConversationHandler(
     states={
         SELECT_LANGUAGE: [
             CallbackQueryHandler(get_language_selected, pattern="^get_lang_"),
+            CallbackQueryHandler(get_magazines_prompt, pattern="^get_magazines$"),
         ],
         SELECT_TITLE: [
             CallbackQueryHandler(handle_titles_page_callback, pattern="^get_tpage_"),
@@ -266,6 +444,17 @@ get_conversation_handler = ConversationHandler(
         SELECT_DATE: [
             CallbackQueryHandler(handle_dates_page_callback, pattern="^get_dpage_"),
             CallbackQueryHandler(get_date_selected, pattern="^get_date_"),
+        ],
+        AWAIT_MAG_NAME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_get_mag_search),
+        ],
+        SELECT_MAGAZINE: [
+            CallbackQueryHandler(handle_get_mag_selected, pattern="^getmag_"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_get_mag_search),
+        ],
+        SELECT_EDITION: [
+            CallbackQueryHandler(handle_get_mpage, pattern="^getmpage_"),
+            CallbackQueryHandler(handle_get_edition_selected, pattern="^getmed_"),
         ],
     },
     fallbacks=[CallbackQueryHandler(get_cancel, pattern="^get_cancel$")],

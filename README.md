@@ -67,7 +67,7 @@ With `WEBHOOK_URL` unset the bot runs in long-polling mode and the in-process sc
 | `/start`, `/help` | Welcome and command reference |
 | `/subscribe` | Interactive browser. Subscribe to newspapers by language or search magazines by name; tap a subscribed title again to unsubscribe |
 | `/subscriptions` | View your active subscriptions and remove any with a tap |
-| `/get` | Fetch any newspaper edition from the last 30 days (pick a title, then a date) |
+| `/get` | Fetch any edition on demand: a newspaper (pick a title → date) or a magazine (search → pick the magazine → pick an issue) |
 
 Subscribing sends the latest available edition right away. If nothing is stored for that title yet, it's scraped on demand and delivered as soon as it's found.
 

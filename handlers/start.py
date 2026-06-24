@@ -38,12 +38,12 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "📌 <b>Quick Start</b>\n"
         "┌─────────────────────────────\n"
         "│ 1️⃣  /subscribe — Pick your papers\n"
-        "│ 2️⃣  /get — Fetch any edition by date\n"
+        "│ 2️⃣  /get — Fetch any edition on demand\n"
         "└─────────────────────────────\n\n"
         "📖 <b>All Commands</b>\n\n"
         "  /subscribe — Subscribe &amp; unsubscribe (interactive browser)\n"
         "  /subscriptions — View &amp; manage your subscriptions\n"
-        "  /get — Fetch any newspaper edition by date\n"
+        "  /get — Fetch any newspaper or magazine edition on demand\n"
         "  /help — Command reference\n\n"
         "Let's get you set up! Tap /subscribe to begin 🚀"
     )
@@ -67,8 +67,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "with a tap.\n\n"
 
         "📰 <b>Reading &amp; Retrieval</b>\n"
-        "  /get — Pick a newspaper and a date, and I'll fetch that edition for "
-        "you on the spot.\n\n"
+        "  /get — Fetch any edition on demand: pick a newspaper and a date, or "
+        "search a magazine and pick an issue.\n\n"
 
         "💡 <i>New editions are delivered to you automatically as soon as "
         "they're published.</i>"
