@@ -39,16 +39,6 @@ DATES_PER_PAGE = 8
 EDITIONS_PER_PAGE = 8
 DATE_WINDOW_DAYS = 30  # how far back the date picker can go
 
-LANG_FLAGS: dict[str, str] = {
-    "english": "🇬🇧", "hindi": "🇮🇳", "tamil": "🇮🇳", "telugu": "🇮🇳",
-    "malayalam": "🇮🇳", "kannada": "🇮🇳", "bengali": "🇮🇳", "marathi": "🇮🇳",
-    "gujarati": "🇮🇳", "punjabi": "🇮🇳", "urdu": "🇵🇰",
-}
-
-
-def _flag(language: str) -> str:
-    return LANG_FLAGS.get(language.lower(), "🌐")
-
 
 # ── Step 1: /get → choose a language ─────────────────────────────────────────
 
@@ -64,15 +54,16 @@ async def get_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     buttons = [
-        [InlineKeyboardButton(f"{_flag(lang)} {lang.title()}", callback_data=f"get_lang_{lang}")]
+        [InlineKeyboardButton(f"🇮🇳 Indian {lang.title()} Dailies", callback_data=f"get_lang_{lang}")]
         for lang in languages
     ]
-    buttons.append([InlineKeyboardButton("📖 Magazines", callback_data="get_magazines")])
+    buttons.append([InlineKeyboardButton(
+        "🌍 International News & Magazines", callback_data="get_magazines")])
 
     await update.message.reply_text(
         "📰 <b>Get an Edition</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Pick a newspaper language, or search magazines:",
+        "Pick an Indian newspaper language, or search international news &amp; magazines:",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML",
     )
@@ -128,7 +119,7 @@ async def _show_titles_page(query, context, language: str, page: int) -> int:
     buttons.append([InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")])
 
     await query.edit_message_text(
-        f"{_flag(language)} <b>{html_escape(language.title())} Newspapers</b>  "
+        f"🇮🇳 <b>Indian {html_escape(language.title())} Dailies</b>  "
         f"<i>(page {page + 1}/{total_pages})</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Select a title:",
@@ -260,9 +251,10 @@ async def get_magazines_prompt(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "📖 <b>Get a Magazine</b>\n"
+        "🌍 <b>International News &amp; Magazines</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Type the name of the magazine you want (e.g. <i>The Economist</i>):",
+        "Type the name of an international newspaper or magazine "
+        "(e.g. <i>The Economist</i>, <i>The Washington Post</i>):",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")]]),
     )
@@ -285,7 +277,7 @@ async def handle_get_mag_search(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not results:
         await update.message.reply_text(
-            f"❌ No magazines matched <b>{safe_query}</b>. Type another name:",
+            f"❌ No international titles matched <b>{safe_query}</b>. Type another name:",
             parse_mode="HTML",
         )
         return AWAIT_MAG_NAME
@@ -303,7 +295,7 @@ async def handle_get_mag_search(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(
         f"🔍 <b>Results for '{safe_query}'</b>:\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Pick a magazine:",
+        "Pick a title:",
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="HTML",
     )

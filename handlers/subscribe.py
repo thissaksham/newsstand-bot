@@ -73,26 +73,8 @@ def _magazine_links_html(links: list[tuple[str, str]]) -> str:
         for domain, href in links
     )
 
-# ── Language → flag emoji mapping ────────────────────────────────────────────
-LANG_FLAGS: dict[str, str] = {
-    "english":    "🇬🇧",
-    "hindi":      "🇮🇳",
-    "tamil":      "🇮🇳",
-    "telugu":     "🇮🇳",
-    "malayalam":  "🇮🇳",
-    "kannada":    "🇮🇳",
-    "bengali":    "🇮🇳",
-    "marathi":    "🇮🇳",
-    "gujarati":   "🇮🇳",
-    "punjabi":    "🇮🇳",
-    "urdu":       "🇵🇰",
-}
-
 # ── Conversation States ──────────────────────────────────────────────────────
 SELECT_CATEGORY, AWAITING_MAGAZINE_NAME = range(2)
-
-def _flag(language: str) -> str:
-    return LANG_FLAGS.get(language.lower(), "🌐")
 
 
 async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, category: str, edition: dict) -> None:
@@ -302,13 +284,13 @@ async def subscribe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # 1. Newspaper languages
     for lang in languages:
         buttons.append([InlineKeyboardButton(
-            f"{_flag(lang)} {lang.title()} Dailies",
+            f"🇮🇳 Indian {lang.title()} Dailies",
             callback_data=f"lang:{lang}",
         )])
         
     # 2. Magazines category
     buttons.append([InlineKeyboardButton(
-        "📖 Magazines",
+        "🌍 International News & Magazines",
         callback_data="cat:magazine",
     )])
 
@@ -343,11 +325,11 @@ async def handle_lang_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         buttons = []
         for lang in languages:
             buttons.append([InlineKeyboardButton(
-                f"{_flag(lang)} {lang.title()} Dailies",
+                f"🇮🇳 Indian {lang.title()} Dailies",
                 callback_data=f"lang:{lang}",
             )])
         buttons.append([InlineKeyboardButton(
-            "📖 Magazines",
+            "🌍 International News & Magazines",
             callback_data="cat:magazine",
         )])
 
@@ -422,7 +404,7 @@ async def _show_titles_page(query, user_id: int, language: str, page: int, db_pa
     ])
 
     header = (
-        f"{_flag(language)} <b>{language.title()} Titles</b>  "
+        f"🇮🇳 <b>Indian {language.title()} Dailies</b>  "
         f"<i>(page {page + 1}/{total_pages})</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Tap a title to subscribe / unsubscribe:"
@@ -489,9 +471,10 @@ async def handle_done_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_cat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.edit_message_text(
-        "📖 <b>Subscribe to a Magazine</b>\n"
+        "🌍 <b>International News &amp; Magazines</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Please type the name of the magazine you want to search for (e.g. <i>The Economist</i>):",
+        "Type the name of an international newspaper or magazine to search for "
+        "(e.g. <i>The Economist</i>, <i>The Washington Post</i>):",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🔙 Back", callback_data="lang:__back__")
@@ -583,7 +566,7 @@ async def handle_magazine_search(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(
         f"🔍 <b>Search Results for '{safe_query}'</b>:\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Select the magazine you want to subscribe to:",
+        "Select the international newspaper or magazine you want to subscribe to:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons)
     )

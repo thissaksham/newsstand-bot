@@ -14,58 +14,55 @@ from database.operations import get_user_subscriptions, unsubscribe
 
 logger = logging.getLogger(__name__)
 
-# ── Language → flag emoji mapping ────────────────────────────────────────────
-LANG_FLAGS: dict[str, str] = {
-    "english":   "🇬🇧",
-    "hindi":     "🇮🇳",
-    "tamil":     "🇮🇳",
-    "telugu":    "🇮🇳",
-    "malayalam": "🇮🇳",
-    "kannada":   "🇮🇳",
-    "bengali":   "🇮🇳",
-    "marathi":   "🇮🇳",
-    "gujarati":  "🇮🇳",
-    "punjabi":   "🇮🇳",
-    "urdu":      "🇵🇰",
-}
-
-
-def _flag(language: str) -> str:
-    return LANG_FLAGS.get(language.lower(), "🌐")
+# Origin emojis shown on section headers AND title buttons so a user can tell
+# what's what: Indian newspapers vs international (downmagaz) papers & magazines.
+INDIAN = "🇮🇳"
+INTL = "🌍"
 
 
 def _render_subs(subs: list[dict], mode: str) -> tuple[str, InlineKeyboardMarkup]:
-    """Build the grouped-by-language text and one full-width button per title.
-
-    ``mode`` is "get" (📥 fetch latest) or "remove" (❌ unsubscribe).
-    """
-    by_lang: dict[str, list[dict]] = {}
+    """Build the subscription list, split by type — Indian newspapers (grouped by
+    language) and International news/magazines — with an origin emoji on each
+    section header and every title button. ``mode`` is "get" or "remove"."""
+    newspapers_by_lang: dict[str, list[dict]] = {}
+    magazines: list[dict] = []
     for s in subs:
-        by_lang.setdefault(s.get("language", "Other"), []).append(s)
+        if s.get("category") == "Magazine":
+            magazines.append(s)
+        else:
+            newspapers_by_lang.setdefault(s.get("language") or "Other", []).append(s)
 
     if mode == "get":
-        header = "📥 <b>Get the Latest Edition</b>"
-        footer = "Tap a title to fetch its newest edition."
-        buttons = [
-            [InlineKeyboardButton(f"📥 {t['name']}", callback_data=f"getlatest:{t['id']}")]
-            for t in subs
-        ]
+        header, footer, action, prefix = (
+            "📥 <b>Get the Latest Edition</b>",
+            "Tap a title to fetch its newest edition.", "📥", "getlatest",
+        )
     else:
-        header = "🗑️ <b>Unsubscribe</b>"
-        footer = "Tap a title to unsubscribe from it."
-        buttons = [
-            [InlineKeyboardButton(f"❌ {t['name']}", callback_data=f"unsub:{t['id']}")]
-            for t in subs
-        ]
+        header, footer, action, prefix = (
+            "🗑️ <b>Unsubscribe</b>",
+            "Tap a title to unsubscribe from it.", "❌", "unsub",
+        )
 
     lines: list[str] = [header, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━", ""]
-    for lang, titles in by_lang.items():
-        lines.append(f"{_flag(lang)} <b>{lang.title()}</b>")
-        for t in titles:
-            lines.append(f"  • {t['name']}")
-        lines.append("")
-    lines.append(f"<i>{footer}</i>")
+    buttons: list[list[InlineKeyboardButton]] = []
 
+    for lang in sorted(newspapers_by_lang):
+        lines.append(f"{INDIAN} <b>Indian {lang.title()} Dailies</b>")
+        for t in newspapers_by_lang[lang]:
+            lines.append(f"  • {t['name']}")
+            buttons.append([InlineKeyboardButton(
+                f"{action} {INDIAN} {t['name']}", callback_data=f"{prefix}:{t['id']}")])
+        lines.append("")
+
+    if magazines:
+        lines.append(f"{INTL} <b>International News &amp; Magazines</b>")
+        for t in magazines:
+            lines.append(f"  • {t['name']}")
+            buttons.append([InlineKeyboardButton(
+                f"{action} {INTL} {t['name']}", callback_data=f"{prefix}:{t['id']}")])
+        lines.append("")
+
+    lines.append(f"<i>{footer}</i>")
     return "\n".join(lines), InlineKeyboardMarkup(buttons)
 
 
