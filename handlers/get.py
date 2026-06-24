@@ -23,7 +23,7 @@ from telegram.ext import (
 )
 
 from config import Config
-from utils.helpers import format_date, get_today, html_escape, magazine_date_label
+from utils.helpers import format_date, format_date_long, get_today, html_escape, magazine_date_label
 from scrapers.downmagaz_net import (
     search_magazines, scrape_magazine_tag, matches_version, get_download_links,
 )
@@ -244,7 +244,7 @@ async def get_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     edition_date, link = result
     await query.edit_message_text(
-        f"📰 <b>{safe_name}</b> — {format_date(edition_date)}\n"
+        f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"Here is your edition:\n"
         f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>',

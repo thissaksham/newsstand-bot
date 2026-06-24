@@ -73,6 +73,12 @@ def format_date(d: date) -> str:
     return d.strftime("%d %b %Y")
 
 
+def format_date_long(d: date) -> str:
+    """Format a date with weekday: ``'Wed, 25 Jun 2026'`` — used for newspaper
+    editions, which are tied to a specific day."""
+    return d.strftime("%a, %d %b %Y")
+
+
 def magazine_date_label(title: str, edition_date: date) -> str:
     """Button label for a magazine issue.
 

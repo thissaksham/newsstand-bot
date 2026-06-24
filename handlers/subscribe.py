@@ -33,7 +33,7 @@ from database.operations import (
     log_delivery,
     has_been_delivered,
 )
-from utils.helpers import format_date, html_escape
+from utils.helpers import format_date, format_date_long, html_escape
 from scrapers.downmagaz_net import (
     search_magazines,
     scrape_magazine_tag,
@@ -122,7 +122,7 @@ async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, ca
             await bot.send_message(
                 chat_id=user_id, parse_mode="HTML", disable_web_page_preview=True,
                 text=(
-                    f"📰 <b>{safe_name}</b> — {friendly_date}\n"
+                    f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
                     f"Latest available edition:\n"
                     f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
                 ),
@@ -255,7 +255,7 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                         msg_text = confirm_text
                         if link.startswith(("http://", "https://")):
                             msg_text += (
-                                f"\n\n📰 <b>Latest available edition ({friendly_date}):</b>\n"
+                                f"\n\n📰 <b>Latest available edition ({format_date_long(edition_date)}):</b>\n"
                                 f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
                             )
                         await _reply(query, update, bot, user_id, msg_text)

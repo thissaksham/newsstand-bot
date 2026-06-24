@@ -47,7 +47,7 @@ from database.operations import (
     upsert_scrape_status, get_failed_scrapes, _get_client,
     get_edition, prune_delivery_log,
 )
-from utils.helpers import get_today, format_date, html_escape, is_recent_edition
+from utils.helpers import get_today, format_date, format_date_long, html_escape, is_recent_edition
 from scrapers.downmagaz_net import (
     get_download_links,
     get_magazine_tag_and_version, matches_version, scrape_magazine_tag,
@@ -171,7 +171,7 @@ async def send_edition_to_user(
                 logger.warning("[%s] Skipping edition with non-link file_id (legacy data).", title_name)
                 return
             msg_text = (
-                f"📰 <b>{safe_name}</b> — {friendly_date}\n"
+                f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"Your edition is ready:\n"
                 f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
