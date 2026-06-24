@@ -45,7 +45,7 @@ from database.operations import (
     add_edition, update_edition_status, get_pending_scrapes,
     get_subscribers_for_title, log_delivery, has_been_delivered,
     upsert_scrape_status, get_failed_scrapes, _get_client,
-    get_edition,
+    get_edition, prune_delivery_log,
 )
 from utils.helpers import get_today, format_date, html_escape, is_recent_edition
 from scrapers.downmagaz_net import (
@@ -71,9 +71,10 @@ GLOBAL_TIMEOUT_SECONDS = 600  # 10 minute hard cap on total runtime
 # full cycle on top of each other. Targeted single-title runs are not gated.
 _CYCLE_LOCK = asyncio.Lock()
 
-# Date the daily failure report was last sent (per process), so the noon-hour
-# cycles don't re-send it every 15 minutes.
+# Dates of once-a-day housekeeping (per process), so the every-15-min cycles
+# don't repeat them: the failure report and the delivery_log prune.
 _last_failure_report_date: date | None = None
+_last_prune_date: date | None = None
 
 
 def acquire_lock() -> bool:
@@ -464,6 +465,20 @@ async def _run_scrape_cycle_inner(bot: Bot, target_slug, only_categories, is_man
 
     logger.info("Running catch-up deliveries...")
     await catch_up_deliveries(bot, today)
+
+    # Once-a-day housekeeping (per process): prune delivery_log so it doesn't grow
+    # unbounded over the months. Pruned rows are far outside the catch-up window,
+    # so this never triggers a re-delivery.
+    if target_slug is None:
+        global _last_prune_date
+        if _last_prune_date != today:
+            _last_prune_date = today
+            try:
+                removed = await prune_delivery_log("", days=90)
+                if removed:
+                    logger.info("Pruned %d delivery_log rows older than 90 days.", removed)
+            except Exception as e:
+                logger.warning("delivery_log prune failed: %s", e)
 
     # Daily failure report at 12pm IST — DM'd to the bot admins, at most once per
     # day per process (cycles run every ~15 min, so without the date guard the

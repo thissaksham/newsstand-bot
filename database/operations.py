@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 import os
 
@@ -303,6 +303,18 @@ async def has_been_delivered(db_path: str, user_id: int, edition_id: int) -> boo
     db = await _get_client()
     resp = await db.table("delivery_log").select("id").eq("user_id", user_id).eq("edition_id", edition_id).eq("status", "success").execute()
     return len(resp.data) > 0
+
+
+@_retry_on_client_error
+async def prune_delivery_log(db_path: str, days: int = 90) -> int:
+    """Delete delivery_log rows older than `days` days and return how many were
+    removed. Keeps the table from growing unbounded over months/years. Pruned
+    rows only concern editions far outside the catch-up window, so this never
+    causes a re-delivery (those editions are skipped as too old anyway)."""
+    db = await _get_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    resp = await db.table("delivery_log").delete().lt("delivered_at", cutoff).execute()
+    return len(resp.data) if resp.data else 0
 
 
 # =====================================================================

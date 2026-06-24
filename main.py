@@ -233,6 +233,12 @@ def main() -> None:
     
     if webhook_url:
         port = int(os.environ.get("PORT", 8080))
+        if not os.environ.get("WEBHOOK_SECRET"):
+            logger.warning(
+                "WEBHOOK_SECRET is not set — incoming webhook updates are not "
+                "authenticated. Set WEBHOOK_SECRET on the host so only Telegram "
+                "can post updates to this bot."
+            )
         logger.info(f"Starting bot with Webhook on port {port} -> {webhook_url}")
         app.run_webhook(
             listen="0.0.0.0",
