@@ -47,7 +47,7 @@ from database.operations import (
     upsert_scrape_status, get_failed_scrapes, _get_client,
     get_edition, prune_delivery_log,
 )
-from utils.helpers import get_today, format_date, format_date_long, html_escape, is_recent_edition
+from utils.helpers import get_today, format_date_long, html_escape, is_recent_edition, magazine_date_label
 from scrapers.downmagaz_net import (
     get_download_links,
     get_magazine_tag_and_version, matches_version, scrape_magazine_tag,
@@ -128,11 +128,12 @@ async def send_edition_to_user(
     post URLs that are re-scraped into mirror links at send time. Returns True on
     success, False on failure, with a single rate-limit retry.
     """
-    friendly_date = format_date(edition_date)
     safe_name = html_escape(title_name)
 
     async def _do_send() -> None:
         if category == "Magazine":
+            # Monthlies collapse to "Jun 2026"; dated issues keep the full date.
+            friendly_date = magazine_date_label(title_name, edition_date)
             # file_id holds comma-separated downmagaz post URLs.
             sent_any = False
             for post_url in file_id.split(","):

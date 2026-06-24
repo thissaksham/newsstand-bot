@@ -33,7 +33,7 @@ from database.operations import (
     log_delivery,
     has_been_delivered,
 )
-from utils.helpers import format_date, format_date_long, html_escape
+from utils.helpers import format_date_long, html_escape, magazine_date_label
 from scrapers.downmagaz_net import (
     search_magazines,
     scrape_magazine_tag,
@@ -83,7 +83,6 @@ async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, ca
     edition_id = edition["id"]
     edition_date = datetime.date.fromisoformat(edition["date"])
     file_id = edition.get("file_id") or ""
-    friendly_date = format_date(edition_date)
     safe_name = html_escape(title_name)
 
     if category == "Magazine":
@@ -94,7 +93,8 @@ async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, ca
             await bot.send_message(
                 chat_id=user_id, parse_mode="HTML", disable_web_page_preview=True,
                 text=(
-                    f"📖 <b>Latest Available Edition ({friendly_date}):</b>\n"
+                    f"📖 <b>{safe_name}</b> — {magazine_date_label(title_name, edition_date)}\n"
+                    f"Latest available edition:\n"
                     f"{_magazine_links_html(links)}"
                 ),
             )
@@ -213,7 +213,6 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                 edition_id = latest_edition["id"]
                 edition_date = datetime.date.fromisoformat(latest_edition["date"])
                 file_id = latest_edition.get("file_id") or ""
-                friendly_date = format_date(edition_date)
                 already_delivered = await has_been_delivered(db_path, user_id, edition_id)
 
                 if category == "Magazine":
@@ -223,7 +222,8 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                     if links:
                         msg_text = (
                             f"{confirm_text}\n\n"
-                            f"📖 <b>Latest Available Edition ({friendly_date}):</b>\n"
+                            f"📖 <b>{safe_name}</b> — {magazine_date_label(title_name, edition_date)}\n"
+                            f"Latest available edition:\n"
                             f"{_magazine_links_html(links)}"
                         )
                     else:
