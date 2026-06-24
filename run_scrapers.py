@@ -71,6 +71,10 @@ GLOBAL_TIMEOUT_SECONDS = 600  # 10 minute hard cap on total runtime
 # full cycle on top of each other. Targeted single-title runs are not gated.
 _CYCLE_LOCK = asyncio.Lock()
 
+# Date the daily failure report was last sent (per process), so the noon-hour
+# cycles don't re-send it every 15 minutes.
+_last_failure_report_date: date | None = None
+
 
 def acquire_lock() -> bool:
     """Try to acquire a process-level file lock. Returns False if another run is active."""
@@ -446,12 +450,15 @@ async def _run_scrape_cycle_inner(bot: Bot, target_slug, only_categories, is_man
     logger.info("Running catch-up deliveries...")
     await catch_up_deliveries(bot, today)
 
-    # Daily failure report at 12pm IST — DM'd to the bot admins (only on full
-    # cycles, i.e. the GHA run, so the in-process magazine cycle doesn't dupe it).
+    # Daily failure report at 12pm IST — DM'd to the bot admins, at most once per
+    # day per process (cycles run every ~15 min, so without the date guard the
+    # noon hour would fire it repeatedly).
     if target_slug is None and not only_categories:
+        global _last_failure_report_date
         ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
         admin_ids = config.admin_ids
-        if ist_now.hour == 12 and admin_ids:
+        if ist_now.hour == 12 and admin_ids and _last_failure_report_date != today:
+            _last_failure_report_date = today
             failed_titles = await get_failed_scrapes("", today)
             if failed_titles:
                 report = (

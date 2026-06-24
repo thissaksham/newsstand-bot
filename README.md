@@ -25,10 +25,10 @@ Newspapers and magazines are both **link-shares**: the bot scrapes the source, f
 |---|---|---|
 | Bot (commands, subscriptions, delivery) | **Render** web service (webhook) | Always-on, responds instantly |
 | Database | **Supabase** (Postgres) | Titles, editions, subscriptions, delivery log |
-| Newspaper scraping | **GitHub Actions** cron (every 15 min) | Finds the day's edition link |
-| Magazine scraping | **In-process** APScheduler on the bot (~15 min) | Polls so new issues land quickly |
+| Scraping (newspapers + magazines) | **In-process** APScheduler on the bot (~15 min) | Primary scraper — polls so new editions land quickly |
+| Scraping (backup) | **GitHub Actions** cron (every 15 min) | Runs the same cycle in case the bot host is down |
 
-The bot stays awake on Render's free tier via a self-ping. Magazines are polled in-process because GitHub Actions' cron is best-effort and often delayed; newspapers (cheap link lookups) run on GitHub Actions. A catch-up pass at the end of every cycle re-sends any edition link a subscriber hasn't received yet, so a missed delivery self-heals on the next run.
+The bot stays awake on Render's free tier via a self-ping. Both newspapers and magazines are cheap link-lookups, so the always-on bot scrapes everything in-process every ~15 minutes — this is the reliable primary path, since GitHub Actions' cron is best-effort and frequently delayed or skipped. A catch-up pass at the end of every cycle re-sends any edition link a subscriber hasn't received yet, so a missed delivery self-heals on the next run.
 
 ### How a delivery happens
 1. The scraper fetches the source page and extracts the download link for the target date.
@@ -87,15 +87,13 @@ On startup the bot syncs these into the `titles` table and deactivates any newsp
 
 ## Deployment
 
-### Bot → Render
+### Bot → Render (primary scraper)
 - New **Web Service** from this repo, start command `python main.py`.
-- Env vars: `BOT_TOKEN`, `ADMIN_IDS`, `SUPABASE_URL`, `SUPABASE_KEY`, `WEBHOOK_URL` (`https://<service>.onrender.com/<BOT_TOKEN>`); optional `WEBHOOK_SECRET`, `PORT`, `MAGAZINE_SCRAPE_INTERVAL_MIN` (default 15).
-- Setting `WEBHOOK_URL` switches to webhook mode and enables the keep-alive ping plus the in-process magazine scraper.
+- Env vars: `BOT_TOKEN`, `ADMIN_IDS`, `SUPABASE_URL`, `SUPABASE_KEY`, `WEBHOOK_URL` (`https://<service>.onrender.com/<BOT_TOKEN>`); optional `WEBHOOK_SECRET`, `PORT`, `SCRAPE_INTERVAL_MIN` (default 15).
+- **`WEBHOOK_URL` must be set** — it switches the bot to webhook mode and starts the keep-alive ping plus the in-process scraper (which scrapes newspapers *and* magazines). Without it the bot polls and does no scheduled scraping.
 
-### Newspaper scraper → GitHub Actions
-[`.github/workflows/scrape.yml`](.github/workflows/scrape.yml) runs `run_scrapers.py` every 15 minutes. Add repo secrets: `BOT_TOKEN`, `ADMIN_IDS`, `SUPABASE_URL`, `SUPABASE_KEY`.
-
-> Newspapers are now light link lookups, so you could also move them onto the in-process scheduler and drop GitHub Actions — or run `run_scrapers.py` from any cron host with the same env vars.
+### GitHub Actions (backup scraper)
+[`.github/workflows/scrape.yml`](.github/workflows/scrape.yml) runs the same `run_scrapers.py` cycle every 15 minutes as a backup for when the bot host is down. Add repo secrets: `BOT_TOKEN`, `ADMIN_IDS`, `SUPABASE_URL`, `SUPABASE_KEY`. (Optional — you can disable it now that the bot scrapes in-process.)
 
 ## Web testing UI
 
@@ -110,7 +108,7 @@ Choose **English** or **Hindi** to pick a newspaper from `config.yaml` and see i
 ## Project structure
 ```
 newsstand-bot/
-├── main.py              # Entry: bot, webhook, in-process magazine scheduler
+├── main.py              # Entry: bot, webhook, in-process scraper scheduler
 ├── run_scrapers.py      # Scrape + delivery engine (CLI and importable cycle)
 ├── config.py            # Loads config.yaml + .env into typed settings
 ├── config.yaml          # Newspaper catalogue + schedule

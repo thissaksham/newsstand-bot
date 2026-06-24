@@ -2,18 +2,17 @@
 Newsstand Bot — Main Entry Point
 
 Starts the Telegram bot with all handlers, initializes the database,
-and (in webhook/Render mode) configures the keep-alive self-ping plus an
-in-process magazine scraper.
+and (in webhook/Render mode) configures the keep-alive self-ping plus the
+in-process scraper.
 
 Both newspapers and magazines are link-shares — the bot sends the source
 download link (e.g. Google Drive) rather than re-hosting PDFs, so there is no
 Telegram storage channel.
 
-Scraping:
-- Magazines are checked in-process on a short APScheduler interval so new
-  editions reach subscribers promptly.
-- Newspapers are scraped by GitHub Actions (run_scrapers.py); the in-process
-  catch-up step then forwards any new edition links to subscribers.
+Scraping: newspapers and magazines are both lightweight link-lookups, so the
+always-on bot scrapes everything in-process on a short APScheduler interval.
+This is the primary scraper; the GitHub Actions cron (run_scrapers.py) is only
+a backup for when the bot host is down.
 """
 
 import asyncio
@@ -79,22 +78,23 @@ async def keep_alive_ping(url: str):
         await asyncio.sleep(600)  # Ping every 10 minutes
 
 
-# ─── In-process magazine scraper ───────────────────────────────────────────
+# ─── In-process scraper ────────────────────────────────────────────────────
 
-async def scheduled_magazine_scrape(application: Application) -> None:
-    """Run a lightweight magazine-only scrape+deliver cycle in-process.
+async def scheduled_scrape(application: Application) -> None:
+    """Run a full scrape+deliver cycle (newspapers + magazines) in-process.
 
-    Magazines just need HTTP fetches and link messages (no PDF download/upload),
-    so running them on the always-on bot every few minutes makes delivery timely
-    without the latency and skipped-run unreliability of GitHub Actions cron.
-    The trailing catch-up step also forwards any newspaper editions that the
-    GitHub Actions runner has uploaded but not yet delivered.
+    Both kinds are now lightweight link-shares (HTTP fetch + link message, no
+    PDF download/upload), so the always-on bot can scrape everything every few
+    minutes. This makes the bot self-sufficient and removes the dependence on
+    GitHub Actions' cron, which is delayed/skipped often enough that papers were
+    going undelivered for hours. ``is_manual=False`` keeps the "newspapers only
+    after 6am IST" window.
     """
     from run_scrapers import run_scrape_cycle
     try:
-        await run_scrape_cycle(application.bot, only_categories={"Magazine"})
+        await run_scrape_cycle(application.bot, is_manual=False)
     except Exception:
-        logger.exception("Scheduled magazine scrape failed")
+        logger.exception("Scheduled scrape failed")
 
 
 # ─── Lifecycle Hooks ──────────────────────────────────────────────────────
@@ -122,29 +122,32 @@ async def post_init(application: Application) -> None:
         task = asyncio.create_task(keep_alive_ping(webhook_url))
         application.bot_data["_keep_alive_task"] = task
 
-    # 5. Start the in-process magazine scraper (Render / webhook mode only).
-    #    Local polling dev runs rely on `python run_scrapers.py` instead.
+    # 5. Start the in-process scraper (Render / webhook mode only). This is now
+    #    the primary scraper for newspapers AND magazines; GitHub Actions is just
+    #    a backup. Local polling dev runs rely on `python run_scrapers.py`.
     if webhook_url:
         try:
             from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-            interval = int(os.environ.get("MAGAZINE_SCRAPE_INTERVAL_MIN", "15"))
+            interval = int(os.environ.get("SCRAPE_INTERVAL_MIN")
+                           or os.environ.get("MAGAZINE_SCRAPE_INTERVAL_MIN")
+                           or "15")
             scheduler = AsyncIOScheduler(timezone="UTC")
             scheduler.add_job(
-                scheduled_magazine_scrape,
+                scheduled_scrape,
                 trigger="interval",
                 minutes=interval,
                 args=[application],
-                id="magazine_scrape",
+                id="scrape",
                 max_instances=1,   # never stack runs
                 coalesce=True,      # collapse missed runs into one
                 next_run_time=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=90),
             )
             scheduler.start()
             application.bot_data["_scheduler"] = scheduler
-            logger.info("Started in-process magazine scraper (every %d min).", interval)
+            logger.info("Started in-process scraper (newspapers + magazines, every %d min).", interval)
         except Exception:
-            logger.exception("Failed to start in-process magazine scheduler")
+            logger.exception("Failed to start in-process scheduler")
 
     logger.info("Bot initialized successfully!")
 
