@@ -3,10 +3,19 @@ Newsstand Bot — /start and /help handlers
 """
 
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from database.operations import register_user
+
+# Inline buttons shown under the /start welcome for tap-based onboarding.
+START_KEYBOARD = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📰 Subscribe", callback_data="start_subscribe")],
+    [
+        InlineKeyboardButton("📋 My Subscriptions", callback_data="start_mysubs"),
+        InlineKeyboardButton("❓ Help", callback_data="start_help"),
+    ],
+])
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +54,19 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "  /subscriptions — View &amp; manage your subscriptions\n"
         "  /get — Fetch any newspaper or magazine edition on demand\n"
         "  /help — Command reference\n\n"
-        "Let's get you set up! Tap /subscribe to begin 🚀"
+        "Let's get you set up — tap a button below 👇"
     )
 
-    await update.message.reply_text(welcome, parse_mode="HTML")
+    await update.message.reply_text(welcome, parse_mode="HTML", reply_markup=START_KEYBOARD)
 
 
 # ── /help ────────────────────────────────────────────────────────────────────
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send detailed command reference grouped by category."""
+    """Send detailed command reference grouped by category. Works as the /help
+    command or the ❓ Help button on /start."""
+    if update.callback_query:
+        await update.callback_query.answer()
     text = (
         "📚 <b>Newsstand Bot — Command Reference</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -63,8 +75,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "  /subscribe — Interactive browser. Subscribe to newspapers (by "
         "language) or search magazines by name. Tap a subscribed title again "
         "to unsubscribe.\n"
-        "  /subscriptions — View your active subscriptions and remove any "
-        "with a tap.\n\n"
+        "  /subscriptions — View your active subscriptions; tap 📥 to grab the "
+        "latest edition or ❌ to unsubscribe.\n\n"
 
         "📰 <b>Reading &amp; Retrieval</b>\n"
         "  /get — Fetch any edition on demand: pick a newspaper and a date, or "
@@ -74,4 +86,4 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "they're published.</i>"
     )
 
-    await update.message.reply_text(text, parse_mode="HTML")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode="HTML")

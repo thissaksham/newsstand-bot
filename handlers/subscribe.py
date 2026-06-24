@@ -131,6 +131,36 @@ async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, ca
     await log_delivery("", user_id, edition_id, "success")
 
 
+async def handle_getlatest_callback(update, context) -> None:
+    """'📥 Get latest' button in /subscriptions — re-send the latest stored
+    edition of a subscribed title."""
+    query = update.callback_query
+    await query.answer("Fetching… ⏳")
+    user_id = update.effective_user.id
+    title_id = int(query.data.split(":", 1)[1])
+
+    db = await _get_client()
+    t = await db.table("titles").select("name, category").eq("id", title_id).execute()
+    if not t.data:
+        await context.bot.send_message(user_id, "⚠️ That title no longer exists.")
+        return
+    name = t.data[0]["name"]
+    category = t.data[0].get("category", "Newspaper")
+
+    ed = await db.table("editions").select("*").eq("title_id", title_id)\
+        .eq("status", "delivered").order("date", desc=True).limit(1).execute()
+    if not ed.data:
+        await context.bot.send_message(
+            user_id,
+            f"📭 No edition of <b>{html_escape(name)}</b> is available yet — "
+            f"you'll get it automatically as soon as one is published.",
+            parse_mode="HTML",
+        )
+        return
+
+    await _deliver_stored_edition_to_user(context.bot, user_id, name, category, ed.data[0])
+
+
 async def _scrape_and_deliver_one(bot, slug: str, title_id: int, user_id: int, category: str, title_name: str) -> None:
     """On-demand: scrape a single just-subscribed title in-process, then deliver
     the latest edition to the user (unless the cycle already delivered it)."""
@@ -255,7 +285,10 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def subscribe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show category/language picker as inline keyboard."""
+    """Show category/language picker as inline keyboard. Works whether entered by
+    the /subscribe command or the 📰 Subscribe button on /start."""
+    if update.callback_query:
+        await update.callback_query.answer()
     db_path = context.bot_data["config"].db_path
     all_titles = await get_all_titles(db_path)
 
@@ -279,10 +312,13 @@ async def subscribe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         callback_data="cat:magazine",
     )])
 
-    await update.message.reply_text(
-        "📰 <b>Subscribe — Choose a Category</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Pick a category or language to browse available titles:",
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=(
+            "📰 <b>Subscribe — Choose a Category</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Pick a category or language to browse available titles:"
+        ),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -623,6 +659,7 @@ async def handle_submag_callback(update: Update, context: ContextTypes.DEFAULT_T
 subscribe_conversation_handler = ConversationHandler(
     entry_points=[
         CommandHandler("subscribe", subscribe_handler),
+        CallbackQueryHandler(subscribe_handler, pattern="^start_subscribe$"),
     ],
     states={
         SELECT_CATEGORY: [
