@@ -65,8 +65,9 @@ With `WEBHOOK_URL` unset the bot runs in long-polling mode and the in-process sc
 | Command | What it does |
 |---|---|
 | `/start`, `/help` | Welcome and command reference |
-| `/subscribe` | Interactive browser. Subscribe to newspapers by language or search magazines by name; tap a subscribed title again to unsubscribe |
-| `/subscriptions` | View your active subscriptions and remove any with a tap |
+| `/subscribe` | Interactive browser: subscribe to newspapers by language or search magazines by name |
+| `/getlatest` | List your subscriptions; tap one to fetch its latest edition |
+| `/unsubscribe` | List your subscriptions; tap one to remove it |
 | `/get` | Fetch any edition on demand: a newspaper (pick a title → date) or a magazine (search → pick the magazine → pick an issue) |
 
 Subscribing sends the latest available edition right away. If nothing is stored for that title yet, it's scraped on demand and delivered as soon as it's found.
@@ -114,7 +115,7 @@ newsstand-bot/
 ├── config.yaml          # Newspaper catalogue + schedule
 ├── database/
 │   └── operations.py    # Supabase CRUD
-├── handlers/            # /start, /subscribe, /subscriptions, /get + callback router
+├── handlers/            # /start, /subscribe, /getlatest, /unsubscribe, /get + callback router
 ├── scrapers/
 │   ├── careerswave_in.py    # newspaper link finder
 │   ├── dailyepaper_in.py    # newspaper link finder

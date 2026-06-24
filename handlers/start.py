@@ -12,7 +12,7 @@ from database.operations import register_user
 START_KEYBOARD = InlineKeyboardMarkup([
     [InlineKeyboardButton("📰 Subscribe", callback_data="start_subscribe")],
     [
-        InlineKeyboardButton("📋 My Subscriptions", callback_data="start_mysubs"),
+        InlineKeyboardButton("📥 Get Latest", callback_data="start_mysubs"),
         InlineKeyboardButton("❓ Help", callback_data="start_help"),
     ],
 ])
@@ -50,8 +50,9 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "│ 2️⃣  /get — Fetch any edition on demand\n"
         "└─────────────────────────────\n\n"
         "📖 <b>All Commands</b>\n\n"
-        "  /subscribe — Subscribe &amp; unsubscribe (interactive browser)\n"
-        "  /subscriptions — View &amp; manage your subscriptions\n"
+        "  /subscribe — Subscribe to newspapers &amp; magazines\n"
+        "  /getlatest — Get the latest edition of a subscription\n"
+        "  /unsubscribe — Remove a subscription\n"
         "  /get — Fetch any newspaper or magazine edition on demand\n"
         "  /help — Command reference\n\n"
         "Let's get you set up — tap a button below 👇"
@@ -72,11 +73,11 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
         "🔎 <b>Browsing &amp; Subscriptions</b>\n"
-        "  /subscribe — Interactive browser. Subscribe to newspapers (by "
-        "language) or search magazines by name. Tap a subscribed title again "
-        "to unsubscribe.\n"
-        "  /subscriptions — View your active subscriptions; tap 📥 to grab the "
-        "latest edition or ❌ to unsubscribe.\n\n"
+        "  /subscribe — Browse &amp; subscribe to newspapers (by language) or "
+        "magazines (by search).\n"
+        "  /getlatest — List your subscriptions; tap one to fetch its latest "
+        "edition.\n"
+        "  /unsubscribe — List your subscriptions; tap one to remove it.\n\n"
 
         "📰 <b>Reading &amp; Retrieval</b>\n"
         "  /get — Fetch any edition on demand: pick a newspaper and a date, or "

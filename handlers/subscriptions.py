@@ -1,7 +1,9 @@
 """
-Newsstand Bot — /subscriptions handler
-Lists active subscriptions grouped by language, with a "get latest" and an
-"unsubscribe" button per title.
+Newsstand Bot — /getlatest and /unsubscribe handlers
+
+Both list the user's subscriptions (grouped by language) as full-width buttons:
+- /getlatest  → 📥 per title, fetches that title's newest edition
+- /unsubscribe → ❌ per title, removes it
 """
 
 import logging
@@ -32,41 +34,44 @@ def _flag(language: str) -> str:
     return LANG_FLAGS.get(language.lower(), "🌐")
 
 
-def _render_subscriptions(subs: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
-    """Build the grouped-by-language text and the per-title button rows
-    (📥 get latest · ❌ unsubscribe)."""
+def _render_subs(subs: list[dict], mode: str) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the grouped-by-language text and one full-width button per title.
+
+    ``mode`` is "get" (📥 fetch latest) or "remove" (❌ unsubscribe).
+    """
     by_lang: dict[str, list[dict]] = {}
     for s in subs:
         by_lang.setdefault(s.get("language", "Other"), []).append(s)
 
-    lines: list[str] = [
-        f"📋 <b>Your Subscriptions</b> ({len(subs)} title{'s' if len(subs) != 1 else ''})",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-    ]
+    if mode == "get":
+        header = "📥 <b>Get the Latest Edition</b>"
+        footer = "Tap a title to fetch its newest edition."
+        buttons = [
+            [InlineKeyboardButton(f"📥 {t['name']}", callback_data=f"getlatest:{t['id']}")]
+            for t in subs
+        ]
+    else:
+        header = "🗑️ <b>Unsubscribe</b>"
+        footer = "Tap a title to unsubscribe from it."
+        buttons = [
+            [InlineKeyboardButton(f"❌ {t['name']}", callback_data=f"unsub:{t['id']}")]
+            for t in subs
+        ]
+
+    lines: list[str] = [header, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━", ""]
     for lang, titles in by_lang.items():
         lines.append(f"{_flag(lang)} <b>{lang.title()}</b>")
         for t in titles:
             lines.append(f"  • {t['name']}")
         lines.append("")
-    lines.append("📥 = get latest   ·   ❌ = unsubscribe")
+    lines.append(f"<i>{footer}</i>")
 
-    buttons = [
-        [
-            InlineKeyboardButton(f"📥 {t['name']}", callback_data=f"getlatest:{t['id']}"),
-            InlineKeyboardButton("❌", callback_data=f"unsub:{t['id']}"),
-        ]
-        for t in subs
-    ]
     return "\n".join(lines), InlineKeyboardMarkup(buttons)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  /subscriptions — View active subs  (works as a command or a /start button)
-# ═════════════════════════════════════════════════════════════════════════════
-
-async def subscriptions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List the user's active subscriptions, grouped by language."""
+async def _show_subs(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str) -> None:
+    """Send the subscription list in the given mode. Works as a command or a
+    /start button callback."""
     if update.callback_query:
         await update.callback_query.answer()
 
@@ -79,21 +84,31 @@ async def subscriptions_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await context.bot.send_message(
             chat_id,
             "📭 <b>No subscriptions yet.</b>\n\n"
-            "Use /subscribe to browse and subscribe to available titles! 🚀",
+            "Use /subscribe to add some! 🚀",
             parse_mode="HTML",
         )
         return
 
-    text, keyboard = _render_subscriptions(subs)
+    text, keyboard = _render_subs(subs, mode)
     await context.bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  Callback: unsub:{title_id}
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+async def getlatest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/getlatest — list subscriptions with a 📥 button per title."""
+    await _show_subs(update, context, "get")
+
+
+async def unsubscribe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/unsubscribe — list subscriptions with a ❌ button per title."""
+    await _show_subs(update, context, "remove")
+
+
+# ── Callback: unsub:{title_id} (from the /unsubscribe list) ──────────────────
 
 async def handle_unsub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the inline unsubscribe button."""
+    """Remove a subscription and refresh the unsubscribe list in place."""
     query = update.callback_query
     await query.answer()
 
@@ -112,5 +127,5 @@ async def handle_unsub_callback(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    text, keyboard = _render_subscriptions(subs)
+    text, keyboard = _render_subs(subs, "remove")
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)

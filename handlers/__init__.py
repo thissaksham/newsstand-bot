@@ -11,7 +11,7 @@ from telegram.ext import (
 
 from .start import start_handler, help_handler
 from .subscribe import subscribe_conversation_handler, handle_getlatest_callback
-from .subscriptions import subscriptions_handler
+from .subscriptions import getlatest_handler, unsubscribe_handler
 from .get import get_conversation_handler
 from .callbacks import callback_router
 
@@ -26,13 +26,14 @@ def register_handlers(app: Application) -> None:
     # ── Command handlers ─────────────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
-    app.add_handler(CommandHandler("subscriptions", subscriptions_handler))
+    app.add_handler(CommandHandler("getlatest", getlatest_handler))
+    app.add_handler(CommandHandler("unsubscribe", unsubscribe_handler))
 
     # ── Specific callback buttons (these send a fresh message, so they must NOT
     #    go through the router's edit-on-error path). Registered before the
     #    catch-all so they take precedence.
     app.add_handler(CallbackQueryHandler(handle_getlatest_callback, pattern="^getlatest:"))
-    app.add_handler(CallbackQueryHandler(subscriptions_handler, pattern="^start_mysubs$"))
+    app.add_handler(CallbackQueryHandler(getlatest_handler, pattern="^start_mysubs$"))
     app.add_handler(CallbackQueryHandler(help_handler, pattern="^start_help$"))
 
     # ── Callback query router (catch-all for inline keyboard presses) ────────
