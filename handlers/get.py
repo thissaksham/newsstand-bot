@@ -8,7 +8,6 @@ archive: newspaper dates resolve to a live link via the scrapers'
 (``scrape_magazine_tag`` + ``get_download_links``). Everything is link-based.
 """
 
-import importlib
 import logging
 from datetime import date, timedelta
 
@@ -24,6 +23,7 @@ from telegram.ext import (
 
 from config import Config
 from utils.helpers import format_date, format_date_long, get_today, html_escape, magazine_date_label
+from scrapers import find_newspaper_link
 from scrapers.downmagaz_net import (
     search_magazines, scrape_magazine_tag, matches_version, get_download_links,
 )
@@ -214,13 +214,7 @@ async def get_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.edit_message_text(f"⏳ Fetching <b>{safe_name}</b> for {friendly}…", parse_mode="HTML")
 
     try:
-        module = importlib.import_module(f"scrapers.{title.scrape_website}")
-    except ImportError:
-        await query.edit_message_text(f"❌ Scraper <code>{html_escape(title.scrape_website)}</code> not found.", parse_mode="HTML")
-        return ConversationHandler.END
-
-    try:
-        result = await module.find_download_link(title.source_url, [d])
+        result = await find_newspaper_link(title.name, title.scrape_website, title.source_url, [d])
     except Exception as e:
         logger.exception("[/get] link lookup failed for %s %s", title.slug, d)
         await query.edit_message_text(f"❌ Fetch failed: {html_escape(str(e))}", parse_mode="HTML")

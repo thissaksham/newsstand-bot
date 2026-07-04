@@ -21,15 +21,16 @@ Run::
 
 from __future__ import annotations
 
-import importlib
 import logging
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from config import Config
-from utils.helpers import format_date
+from scrapers import find_newspaper_link
+from utils.helpers import format_date, get_today
 from scrapers.downmagaz_net import (
     search_magazines,
     scrape_magazine_tag,
@@ -73,16 +74,11 @@ async def api_newspaper_link(slug: str = Query(...)):
         raise HTTPException(status_code=400, detail="This title has no source configured.")
 
     try:
-        module = importlib.import_module(f"scrapers.{title.scrape_website}")
-    except ImportError:
-        raise HTTPException(status_code=500, detail=f"Scraper 'scrapers.{title.scrape_website}' not found.")
-
-    getter = getattr(module, "get_latest_download_link", None)
-    if getter is None:
-        raise HTTPException(status_code=500, detail=f"scrapers.{title.scrape_website} can't expose links.")
-
-    try:
-        result = await getter(title.source_url)
+        today = get_today()
+        result = await find_newspaper_link(
+            title.name, title.scrape_website, title.source_url,
+            [today - timedelta(days=i) for i in range(11)],
+        )
     except Exception as e:
         logger.exception("Link lookup failed for %s", slug)
         raise HTTPException(status_code=502, detail=f"Scrape failed: {e}")

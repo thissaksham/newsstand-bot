@@ -1,4 +1,5 @@
 import re
+import time
 import asyncio
 import logging
 import urllib.request
@@ -9,6 +10,11 @@ from utils.helpers import get_today
 logger = logging.getLogger(__name__)
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36"
+
+_HOME_URL = "https://dailyepaper.in/"
+# Words that may follow a paper's name in its page slug — the anchor between
+# "this slug is about that paper" and near-misses like hindustan → hindustan-times.
+_SLUG_BOILERPLATE = {"epaper", "e-paper", "newspaper", "news", "paper", "today"}
 
 
 async def _fetch_html(source_url: str) -> str:
@@ -92,3 +98,60 @@ async def get_latest_download_link(source_url: str, days_back: int = 10) -> tupl
     """Link for the most recent available edition within ``days_back`` days."""
     today = get_today()
     return await find_download_link(source_url, [today - timedelta(days=i) for i in range(days_back + 1)])
+
+
+# ── automatic page discovery (fallback source) ──────────────────────────────
+
+# ponytail: module-level cache of homepage links (6h TTL, 10min on failure) —
+# enough to keep a ~15min scrape cycle from refetching the index per title.
+_home_cache: tuple[float, list[str]] = (0.0, [])
+
+
+def _slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def match_title_page(links: list[str], title_name: str, year: int) -> str | None:
+    """Pick the paper-page URL whose slug is the title's name followed by a
+    boilerplate word: 'Times of India' → .../times-of-india-epaper-...-2026/.
+
+    Requiring boilerplate right after the name keeps 'Hindustan' from matching
+    hindustan-times-*. A leading 'The' is optional on both sides ('The Pioneer'
+    → pioneer-epaper-pdf-2025/). Prefers the current year's page — the site
+    keeps stale previous-year pages linked alongside.
+    """
+    base = _slugify(title_name)
+    variants = {base, base[4:] if base.startswith("the-") else "the-" + base}
+
+    candidates = []
+    for url in links:
+        slug = url.rstrip("/").rsplit("/", 1)[-1].lower()
+        if any(
+            slug.startswith(v + "-") and slug[len(v) + 1:].split("-")[0] in _SLUG_BOILERPLATE
+            for v in variants
+        ):
+            candidates.append(url)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda u: str(year) not in u)
+    return candidates[0]
+
+
+async def find_title_page(title_name: str) -> str | None:
+    """Discover a paper's page on dailyepaper.in from the homepage link index.
+
+    Lets dailyepaper.in act as an automatic fallback source for any newspaper
+    without per-title configuration. Returns ``None`` when the paper isn't
+    listed (or the homepage is unreachable)."""
+    global _home_cache
+    expires, links = _home_cache
+    if time.time() > expires:
+        try:
+            html = await _fetch_html(_HOME_URL)
+        except Exception as e:
+            logger.error("Failed to fetch dailyepaper.in homepage: %s", e)
+            _home_cache = (time.time() + 600, [])
+            return None
+        links = sorted(set(re.findall(r'href="(https://dailyepaper\.in/[^"#?]+)"', html)))
+        _home_cache = (time.time() + 6 * 3600, links)
+    return match_title_page(links, title_name, get_today().year)

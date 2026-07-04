@@ -29,7 +29,6 @@ Key reliability features:
 import os
 import sys
 import asyncio
-import importlib
 import logging
 import tempfile
 from datetime import datetime, date, timezone, timedelta
@@ -48,6 +47,7 @@ from database.operations import (
     get_edition, prune_delivery_log,
 )
 from utils.helpers import get_today, format_date_long, html_escape, is_recent_edition, magazine_date_label
+from scrapers import find_newspaper_link
 from scrapers.downmagaz_net import (
     get_download_links,
     get_magazine_tag_and_version, matches_version, scrape_magazine_tag,
@@ -420,15 +420,11 @@ async def _run_scrape_cycle_inner(bot: Bot, target_slug, only_categories, is_man
                 logger.info("[%s] Skipped: No source module or source URL defined.", name)
                 continue
 
-            try:
-                scraper_module = importlib.import_module(f"scrapers.{source_module_name}")
-            except ImportError:
-                logger.error("[%s] Failed: Scraper module 'scrapers.%s' not found.", name, source_module_name)
-                continue
-
-            # Find the latest available edition's link (today, then up to 3 days back).
-            result = await scraper_module.find_download_link(
-                source_url, [today - timedelta(days=n) for n in range(4)]
+            # Find the latest available edition's link (today, then up to 3 days
+            # back), with dailyepaper.in as automatic fallback if the primary lags.
+            result = await find_newspaper_link(
+                name, source_module_name, source_url,
+                [today - timedelta(days=n) for n in range(4)],
             )
             if not result:
                 await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
