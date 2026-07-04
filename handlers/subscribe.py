@@ -77,9 +77,12 @@ def _magazine_links_html(links: list[tuple[str, str]]) -> str:
 SELECT_CATEGORY, AWAITING_MAGAZINE_NAME = range(2)
 
 
-async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, category: str, edition: dict) -> None:
+async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, category: str, edition: dict) -> bool:
     """Deliver one already-stored edition's download link(s) to a single user and
-    log the delivery. Assumes the caller checked it isn't a dup."""
+    log the delivery. Assumes the caller checked it isn't a dup.
+
+    Returns True only if the edition was actually sent — never logs a delivery
+    for a message that didn't go out, so catch-up can retry later."""
     edition_id = edition["id"]
     edition_date = datetime.date.fromisoformat(edition["date"])
     file_id = edition.get("file_id") or ""
@@ -89,28 +92,31 @@ async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, ca
         links = []
         for post_url in (p for p in file_id.split(",") if p):
             links.extend(await get_download_links(post_url))
-        if links:
-            await bot.send_message(
-                chat_id=user_id, parse_mode="HTML", disable_web_page_preview=True,
-                text=(
-                    f"📖 <b>{safe_name}</b> — {magazine_date_label(title_name, edition_date)}\n"
-                    f"Latest available edition:\n"
-                    f"{_magazine_links_html(links)}"
-                ),
-            )
+        if not links:
+            return False
+        await bot.send_message(
+            chat_id=user_id, parse_mode="HTML", disable_web_page_preview=True,
+            text=(
+                f"📖 <b>{safe_name}</b> — {magazine_date_label(title_name, edition_date)}\n"
+                f"Latest available edition:\n"
+                f"{_magazine_links_html(links)}"
+            ),
+        )
     else:
         link = file_id.split(",")[0]
-        if link.startswith(("http://", "https://")):
-            await bot.send_message(
-                chat_id=user_id, parse_mode="HTML", disable_web_page_preview=True,
-                text=(
-                    f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
-                    f"Latest available edition:\n"
-                    f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
-                ),
-            )
+        if not link.startswith(("http://", "https://")):
+            return False
+        await bot.send_message(
+            chat_id=user_id, parse_mode="HTML", disable_web_page_preview=True,
+            text=(
+                f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
+                f"Latest available edition:\n"
+                f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
+            ),
+        )
 
     await log_delivery("", user_id, edition_id, "success")
+    return True
 
 
 async def handle_getlatest_callback(update, context) -> None:
@@ -140,7 +146,12 @@ async def handle_getlatest_callback(update, context) -> None:
         )
         return
 
-    await _deliver_stored_edition_to_user(context.bot, user_id, name, category, ed.data[0])
+    if not await _deliver_stored_edition_to_user(context.bot, user_id, name, category, ed.data[0]):
+        await context.bot.send_message(
+            user_id,
+            f"📭 No download links are available yet for <b>{html_escape(name)}</b> — try again later.",
+            parse_mode="HTML",
+        )
 
 
 async def _scrape_and_deliver_one(bot, slug: str, title_id: int, user_id: int, category: str, title_name: str) -> None:
@@ -157,23 +168,25 @@ async def _scrape_and_deliver_one(bot, slug: str, title_id: int, user_id: int, c
         resp = await db.table("editions").select("*").eq("title_id", title_id)\
             .eq("status", "delivered").order("date", desc=True).limit(1).execute()
 
-        if not resp.data:
-            try:
-                await bot.send_message(
-                    chat_id=user_id, parse_mode="HTML",
-                    text=(
-                        f"😔 We couldn't fetch <b>{html_escape(title_name)}</b> right now. "
-                        f"We'll keep checking and send it the moment it's available."
-                    ),
-                )
-            except Exception:
-                pass
-            return
+        if resp.data:
+            edition = resp.data[0]
+            if await has_been_delivered("", user_id, edition["id"]):
+                return  # the scrape cycle already delivered it
+            if await _deliver_stored_edition_to_user(bot, user_id, title_name, category, edition):
+                return
 
-        edition = resp.data[0]
-        if await has_been_delivered("", user_id, edition["id"]):
-            return  # the scrape cycle already delivered it
-        await _deliver_stored_edition_to_user(bot, user_id, title_name, category, edition)
+        # Nothing stored, or stored but not sendable yet (e.g. magazine post with
+        # no mirror links) — catch-up will deliver it once it's available.
+        try:
+            await bot.send_message(
+                chat_id=user_id, parse_mode="HTML",
+                text=(
+                    f"😔 We couldn't fetch <b>{html_escape(title_name)}</b> right now. "
+                    f"We'll keep checking and send it the moment it's available."
+                ),
+            )
+        except Exception:
+            pass
     except Exception as ex:
         logger.error("[BG Scrape %s] post-scrape delivery failed: %s", slug, ex)
 
@@ -229,7 +242,9 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                     else:
                         msg_text = confirm_text
                     await _reply(query, update, bot, user_id, msg_text)
-                    if not already_delivered:
+                    # Only mark delivered if the links actually went out —
+                    # otherwise catch-up retries once mirrors appear.
+                    if links and not already_delivered:
                         await log_delivery(db_path, user_id, edition_id, "success")
                 else:
                     if not already_delivered:
