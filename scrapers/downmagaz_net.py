@@ -7,8 +7,11 @@ import httpx
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, quote
 from thefuzz import fuzz
+import logging
 import re
 from datetime import datetime, date
+
+logger = logging.getLogger(__name__)
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
@@ -171,10 +174,13 @@ async def search_magazines(query: str) -> list[dict]:
 
 def parse_date_from_title(title_text: str) -> date | None:
     """Helper to parse a date from the post title."""
-    # Pattern 1: DD.MM.YYYY or MM.DD.YYYY
-    date_match = re.search(r'(\d{1,2})[.-](\d{1,2})[.-](\d{4})', title_text)
+    # Pattern 1: DD.MM.YYYY or MM.DD.YYYY — uploaders use both 2- and 4-digit
+    # years ("7.13.26" alongside "07.13.2026"), same as clean_version() strips.
+    date_match = re.search(r'(\d{1,2})[.-](\d{1,2})[.-](\d{4}|\d{2})', title_text)
     if date_match:
         d1, d2, y = date_match.groups()
+        if len(y) == 2:
+            y = f"20{y}"
         try:
             if int(d1) > 12:
                 return datetime.strptime(f"{d1}.{d2}.{y}", "%d.%m.%Y").date()
@@ -241,8 +247,12 @@ async def scrape_magazine_tag(tag_url: str) -> list[dict]:
                     
                 parsed_date = parse_date_from_title(title_text)
                 if not parsed_date:
-                    parsed_date = date.today()
-                    
+                    # Never fall back to today's date: "today" outranks every real
+                    # edition in catch-up, so one unparseable title would re-deliver
+                    # itself every morning AND mask the genuine new issues behind it.
+                    logger.warning("Skipping post with unparseable date: %r (%s)", title_text, post_url)
+                    continue
+
                 results.append({
                     "title": title_text,
                     "url": post_url,
