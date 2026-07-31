@@ -9,9 +9,18 @@ from urllib.parse import urlparse, quote
 from thefuzz import fuzz
 import logging
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+
+from utils.helpers import get_today
 
 logger = logging.getLogger(__name__)
+
+# Publications that write post-title dates US-style (MM.DD.YYYY). Only consulted
+# when a date is ambiguous; the future-date guard in parse_date_from_title()
+# catches anything not listed here.
+_US_DATE_PUBS = (
+    "washington", "audio", "usa", "new york times", "wall street journal",
+)
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
@@ -184,13 +193,25 @@ def parse_date_from_title(title_text: str) -> date | None:
         try:
             if int(d1) > 12:
                 return datetime.strptime(f"{d1}.{d2}.{y}", "%d.%m.%Y").date()
-            elif int(d2) > 12:
+            if int(d2) > 12:
                 return datetime.strptime(f"{d1}.{d2}.{y}", "%m.%d.%Y").date()
-            else:
-                if any(k in title_text.lower() for k in ("washington", "audio", "usa")):
-                    return datetime.strptime(f"{d1}.{d2}.{y}", "%m.%d.%Y").date()
-                else:
-                    return datetime.strptime(f"{d1}.{d2}.{y}", "%d.%m.%Y").date()
+
+            # Ambiguous (both parts <= 12): fall back to the publication's own
+            # convention, then sanity-check it against the calendar below.
+            us_style = any(k in title_text.lower() for k in _US_DATE_PUBS)
+            chosen = datetime.strptime(f"{d1}.{d2}.{y}", "%m.%d.%Y" if us_style else "%d.%m.%Y").date()
+            other = datetime.strptime(f"{d1}.{d2}.{y}", "%d.%m.%Y" if us_style else "%m.%d.%Y").date()
+
+            # No edition is published months ahead, so a far-future reading means
+            # we guessed the convention wrong — take the other one. This
+            # self-corrects publications missing from _US_DATE_PUBS, and a
+            # future date is the one misparse that sticks forever: it outranks
+            # every real edition in catch-up. The week of grace keeps weeklies
+            # posted slightly ahead of their cover date parsing normally.
+            cutoff = get_today() + timedelta(days=7)
+            if chosen > cutoff >= other:
+                return other
+            return chosen
         except Exception:
             pass
             
