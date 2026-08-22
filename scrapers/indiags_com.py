@@ -4,9 +4,14 @@ Newsstand Bot — indiags.com scraper for The Hindu / Indian Express.
 The listing page at https://www.indiags.com/epaper-pdf-download contains a
 grid of newspaper cards (``div.ep-grid``). Each card has a footer link like
 ``https://www.indiags.com/epaper/books/<id>``. Visiting the corresponding
-``/epaper/open/<id>`` page and waiting for the unlock timer reveals a final
-download link inside ``div#pdfUnlockBanner`` (a ``/go/<token>`` URL). That
-URL is what we store and send to subscribers.
+``/epaper/open/<id>`` endpoint returns a 302 redirect whose Location header
+contains a URL fragment ``#unlock=<url-encoded-go-link>&exp=<timestamp>``. The
+page JavaScript decodes that hash and eventually injects it into
+``div#pdfUnlockBanner`` as a ``/go/<token>`` URL.
+
+We skip the countdown by reading the redirect Location (or final URL fragment)
+directly and returning the ``/go/<token>`` URL, which is what we store and send
+to subscribers.
 
 This module follows the same ``find_download_link(source_url, dates_to_try)``
 interface used by the other newspaper scrapers so the scheduler, /get and the
@@ -20,6 +25,7 @@ import asyncio
 import logging
 import re
 import time
+import urllib.parse
 import urllib.request
 from datetime import date
 
@@ -61,18 +67,29 @@ class IndiagsError(Exception):
     """Raised when the indiags.com flow cannot produce a download link."""
 
 
-async def _fetch_html(url: str, timeout: float = 30.0) -> str:
-    """Fetch a page synchronously (urllib) off the asyncio event loop."""
+async def _fetch_html_and_url(url: str, timeout: float = 30.0) -> tuple[str, str]:
+    """Fetch a page synchronously (urllib) and return (html, final_url).
+
+    ``final_url`` includes the fragment if the server put one on the redirect
+    Location and the redirect handler preserved it.
+    """
     req = urllib.request.Request(url, headers=HEADERS)
 
-    def _fetch() -> str:
+    def _fetch() -> tuple[str, str]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            final_url = resp.geturl()
             raw = resp.read()
             encoding = resp.headers.get_content_charset("utf-8")
-            return raw.decode(encoding, errors="replace")
+            return raw.decode(encoding, errors="replace"), final_url
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _fetch)
+
+
+async def _fetch_html(url: str, timeout: float = 30.0) -> str:
+    """Fetch a page synchronously (urllib) off the asyncio event loop."""
+    html, _ = await _fetch_html_and_url(url, timeout=timeout)
+    return html
 
 
 def _normalise_name(name: str) -> str:
@@ -84,6 +101,45 @@ def _extract_book_id(books_url: str) -> str | None:
     """Pull the numeric id out of ``/epaper/books/<id>``."""
     match = re.search(r"/epaper/books/(\d+)", books_url)
     return match.group(1) if match else None
+
+
+def _extract_go_link_from_url(url: str) -> str | None:
+    """Extract the ``/go/<token>`` link from the URL hash.
+
+    The server redirects the ``/epaper/open/<id>`` request to a URL like
+    ``/some-page#unlock=<url-encoded-go-link>&exp=<unix-timestamp>``. The page
+    JavaScript decodes that hash to reveal the real download URL. We can skip
+    the timer by reading the fragment directly from the redirect Location
+    header or from the final request URL.
+    """
+    fragment = urllib.parse.urlparse(url).fragment
+    if not fragment or not fragment.startswith("unlock="):
+        return None
+
+    raw = fragment[len("unlock="):]
+    exp_idx = raw.rfind("&exp=")
+    if exp_idx != -1:
+        raw = raw[:exp_idx]
+
+    try:
+        decoded = urllib.parse.unquote(raw)
+    except Exception:
+        return None
+
+    decoded = decoded.strip()
+    if not decoded:
+        return None
+
+    if decoded.startswith("/go/"):
+        return f"{_BASE_URL}{decoded}"
+    if decoded.startswith("http://") or decoded.startswith("https://"):
+        return decoded
+
+    # The decoded value might just be the token portion; construct full URL.
+    if re.match(r"^[A-Za-z0-9_-]+$", decoded):
+        return f"{_BASE_URL}/go/{decoded}"
+
+    return None
 
 
 def _find_go_link(html: str) -> str | None:
@@ -121,9 +177,10 @@ def _find_go_link(html: str) -> str | None:
 async def _fetch_open_page_with_session(book_id: str) -> str:
     """Fetch the unlock page using a single cookie-aware httpx session.
 
-    The server may set a session cookie on the first request and only reveal the
-    ``/go/`` link to that same session after the countdown. Using one client with
-    a shared cookie jar makes both requests part of the same session.
+    The real download URL is hidden in the redirect fragment
+    ``#unlock=<url-encoded-go-link>&exp=<ts>``. We try to capture that from the
+    Location header first (fastest), then from the final URL if httpx preserved
+    the fragment, and finally fall back to scanning the rendered HTML.
     """
     open_url = f"{_BASE_URL}/epaper/open/{book_id}"
     logger.info("[indiags] Opening unlock page with cookie session: %s", open_url)
@@ -133,14 +190,32 @@ async def _fetch_open_page_with_session(book_id: str) -> str:
         follow_redirects=True,
         timeout=30.0,
     ) as client:
+        # 1. Try without following redirects so we can read the Location header
+        #    and its fragment intact.
+        resp_redirect = await client.get(open_url, follow_redirects=False)
+        location = resp_redirect.headers.get("location", "")
+        if location:
+            logger.info("[indiags] Redirect Location: %s", location)
+            link = _extract_go_link_from_url(location)
+            if link:
+                logger.info("[indiags] Found go-link in redirect Location: %s", link)
+                return link
+
+        # 2. Follow redirects and check if the final URL retained the fragment.
         resp1 = await client.get(open_url)
         resp1.raise_for_status()
-        first_html = resp1.text
-        logger.info("[indiags] First open-page fetch: HTTP %s, cookies=%s", resp1.status_code, list(client.cookies.jar))
+        final_url = str(resp1.url)
+        logger.info("[indiags] First open-page fetch: HTTP %s, final_url=%s, cookies=%s", resp1.status_code, final_url, list(client.cookies.jar))
 
+        link = _extract_go_link_from_url(final_url)
+        if link:
+            logger.info("[indiags] Found go-link in final URL: %s", link)
+            return link
+
+        first_html = resp1.text
         link = _find_go_link(first_html)
         if link:
-            logger.info("[indiags] Found go-link on first fetch: %s", link)
+            logger.info("[indiags] Found go-link in first-fetch HTML: %s", link)
             return link
 
         logger.info("[indiags] No go-link yet for %s; waiting 20s for unlock...", book_id)
@@ -149,7 +224,13 @@ async def _fetch_open_page_with_session(book_id: str) -> str:
         resp2 = await client.get(open_url)
         resp2.raise_for_status()
         second_html = resp2.text
-        logger.info("[indiags] Second open-page fetch: HTTP %s, cookies=%s", resp2.status_code, list(client.cookies.jar))
+        final_url2 = str(resp2.url)
+        logger.info("[indiags] Second open-page fetch: HTTP %s, final_url=%s, cookies=%s", resp2.status_code, final_url2, list(client.cookies.jar))
+
+        link = _extract_go_link_from_url(final_url2)
+        if link:
+            logger.info("[indiags] Found go-link in second final URL: %s", link)
+            return link
 
         link = _find_go_link(second_html)
         if link:
@@ -239,19 +320,32 @@ async def _fetch_open_page_link(book_id: str) -> str:
     except Exception as e:
         logger.warning("[indiags] Cookie-session fetch failed (%s), falling back to plain urllib.", e)
 
-    first_html = await _fetch_html(open_url)
+    # urllib follow redirects via HTTPRedirectHandler preserves the Location
+    # string on the response object only as the redirected url, which may or may
+    # not keep the fragment. Try to extract from the returned URL first.
+    first_html, first_url = await _fetch_html_and_url(open_url)
+    link = _extract_go_link_from_url(first_url)
+    if link:
+        logger.info("[indiags] Found go-link in urllib final URL: %s", link)
+        return link
+
     link = _find_go_link(first_html)
     if link:
-        logger.info("[indiags] Found go-link on first fetch: %s", link)
+        logger.info("[indiags] Found go-link on first urllib fetch: %s", link)
         return link
 
     logger.info("[indiags] No go-link yet for %s; waiting 20s for unlock...", book_id)
     await asyncio.sleep(20)
 
-    second_html = await _fetch_html(open_url)
+    second_html, second_url = await _fetch_html_and_url(open_url)
+    link = _extract_go_link_from_url(second_url)
+    if link:
+        logger.info("[indiags] Found go-link in second urllib final URL: %s", link)
+        return link
+
     link = _find_go_link(second_html)
     if link:
-        logger.info("[indiags] Found go-link after wait: %s", link)
+        logger.info("[indiags] Found go-link after urllib wait: %s", link)
         return link
 
     snippet = _snippet_around_banner(second_html)

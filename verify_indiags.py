@@ -23,6 +23,7 @@ No Telegram, no database, no bot logic.
 import asyncio
 import re
 import sys
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -73,6 +74,31 @@ def title_matches(card_name: str, target: str) -> bool:
 def extract_book_id(url: str) -> str | None:
     m = re.search(r"/epaper/books/(\d+)", url)
     return m.group(1) if m else None
+
+
+def extract_go_link_from_url(url: str) -> str | None:
+    """Extract /go/<token> from a URL fragment like #unlock=<encoded>&exp=<ts>."""
+    fragment = urllib.parse.urlparse(url).fragment
+    if not fragment or not fragment.startswith("unlock="):
+        return None
+    raw = fragment[len("unlock="):]
+    exp_idx = raw.rfind("&exp=")
+    if exp_idx != -1:
+        raw = raw[:exp_idx]
+    try:
+        decoded = urllib.parse.unquote(raw)
+    except Exception:
+        return None
+    decoded = decoded.strip()
+    if not decoded:
+        return None
+    if decoded.startswith("/go/"):
+        return f"{BASE_URL}{decoded}"
+    if decoded.startswith("http://") or decoded.startswith("https://"):
+        return decoded
+    if re.match(r"^[A-Za-z0-9_-]+$", decoded):
+        return f"{BASE_URL}/go/{decoded}"
+    return None
 
 
 def find_go_links(html: str, label: str) -> list[str]:
@@ -198,30 +224,63 @@ async def main(paper_name: str):
     open_url = f"{BASE_URL}/epaper/open/{paper['book_id']}"
     print(f"\n[4/5] Fetching unlock page with cookie session: {open_url}")
 
+    links1: list[str] = []
+    links2: list[str] = []
+    all_links: list[str] = []
+
     async with httpx.AsyncClient(
         headers=OPEN_HEADERS, follow_redirects=True, timeout=30.0
     ) as client:
-        # first fetch
+        # Capture the redirect Location header without following it.
+        resp_redirect = await client.get(open_url, follow_redirects=False)
+        location = resp_redirect.headers.get("location", "")
+        print(f"  redirect response: HTTP {resp_redirect.status_code}")
+        if location:
+            print(f"  Location header: {location}")
+            loc_link = extract_go_link_from_url(location)
+            if loc_link:
+                print(f"  -> extracted /go/ link from Location: {loc_link}")
+                all_links.append(loc_link)
+
+        # Now follow redirects and inspect the final URL + HTML.
         resp1 = await client.get(open_url)
-        print(f"  first fetch:  HTTP {resp1.status_code}, cookies={list(client.cookies.jar)}")
+        final_url1 = str(resp1.url)
+        print(f"  first fetch:  HTTP {resp1.status_code}, final_url={final_url1}, cookies={list(client.cookies.jar)}")
+        url_link1 = extract_go_link_from_url(final_url1)
+        if url_link1:
+            print(f"  -> extracted /go/ link from final URL: {url_link1}")
+            all_links.append(url_link1)
+
         html1 = resp1.text
         save(out_dir / "indiags_open_1.html", html1)
         links1 = find_go_links(html1, "first")
-        print(f"  /go/ links found on first fetch: {links1 if links1 else 'none'}")
+        print(f"  /go/ links found in first HTML: {links1 if links1 else 'none'}")
 
-        # wait
-        print(f"  waiting 20 seconds...")
-        await asyncio.sleep(20)
+        # The link is already available in the redirect Location fragment, so we
+        # only wait/re-fetch as a fallback for diagnostics.
+        if all_links:
+            print(f"  link already found from URL fragment; skipping 20s wait")
+            links2 = []
+        else:
+            # wait
+            print(f"  waiting 20 seconds...")
+            await asyncio.sleep(20)
 
-        # second fetch
-        resp2 = await client.get(open_url)
-        print(f"  second fetch: HTTP {resp2.status_code}, cookies={list(client.cookies.jar)}")
-        html2 = resp2.text
-        save(out_dir / "indiags_open_2.html", html2)
-        links2 = find_go_links(html2, "second")
-        print(f"  /go/ links found on second fetch: {links2 if links2 else 'none'}")
+            # second fetch
+            resp2 = await client.get(open_url)
+            final_url2 = str(resp2.url)
+            print(f"  second fetch: HTTP {resp2.status_code}, final_url={final_url2}, cookies={list(client.cookies.jar)}")
+            url_link2 = extract_go_link_from_url(final_url2)
+            if url_link2:
+                print(f"  -> extracted /go/ link from second final URL: {url_link2}")
+                all_links.append(url_link2)
 
-    all_links = list(dict.fromkeys(links1 + links2))
+            html2 = resp2.text
+            save(out_dir / "indiags_open_2.html", html2)
+            links2 = find_go_links(html2, "second")
+            print(f"  /go/ links found in second HTML: {links2 if links2 else 'none'}")
+
+    all_links = list(dict.fromkeys(all_links + links1 + links2))
     if not all_links:
         print("\n[5/5] RESULT: no /go/ link found in either fetch.")
         print("  Check saved files:")
@@ -230,6 +289,8 @@ async def main(paper_name: str):
         print("    /tmp/indiags_open_2.html")
         return 1
 
+    # Prefer the link extracted from the redirect Location header; it is the
+    # first one issued by the server and is valid immediately (no timer needed).
     go_url = all_links[0]
     print(f"\n[5/5] Using /go/ link: {go_url}")
     pdf_bytes = await download_pdf(go_url)
