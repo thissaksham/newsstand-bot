@@ -126,7 +126,18 @@ async def handle_unsub_callback(update: Update, context: ContextTypes.DEFAULT_TY
     db_path = context.bot_data["config"].db_path
     title_id = int(query.data.split(":", 1)[1])
 
-    await unsubscribe(db_path, user_id, title_id)
+    try:
+        removed = await unsubscribe(db_path, user_id, title_id)
+    except Exception as e:
+        logger.exception("[/unsubscribe] failed for user=%s title=%s", user_id, title_id)
+        await query.edit_message_text(
+            "❌ Could not remove that subscription. Please try again.",
+            parse_mode="HTML",
+        )
+        return
+
+    if not removed:
+        logger.warning("[/unsubscribe] no subscription row found for user=%s title=%s", user_id, title_id)
 
     subs = await get_user_subscriptions(db_path, user_id)
     if not subs:
