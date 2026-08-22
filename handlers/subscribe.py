@@ -555,12 +555,18 @@ async def handle_toggle_callback(update: Update, context: ContextTypes.DEFAULT_T
         first_name=user.first_name or "",
     )
 
-    if await is_subscribed(db_path, user_id, title_id):
-        await unsubscribe(db_path, user_id, title_id)
-    else:
+    subscribing = not await is_subscribed(db_path, user_id, title_id)
+    if subscribing:
         await subscribe(db_path, user_id, title_id)
+    else:
+        await unsubscribe(db_path, user_id, title_id)
 
     await _show_titles_page(query, user_id, language, page, db_path=db_path)
+
+    # Deliver only the title just subscribed to; DONE should just exit.
+    if subscribing:
+        await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title_id)
+
     return SELECT_CATEGORY
 
 
@@ -568,12 +574,6 @@ async def handle_toggle_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    user_id = update.effective_user.id
-    db_path = context.bot_data["config"].db_path
-    
-    # Deliver latest editions for any new subscriptions
-    await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot)
-    
     if query:
         await query.edit_message_text(
             "✅ <b>Subscription updated!</b>\n\n"
@@ -699,12 +699,18 @@ async def handle_category_toggle_callback(update: Update, context: ContextTypes.
         first_name=user.first_name or "",
     )
 
-    if await is_subscribed(db_path, user_id, title_id):
-        await unsubscribe(db_path, user_id, title_id)
-    else:
+    subscribing = not await is_subscribed(db_path, user_id, title_id)
+    if subscribing:
         await subscribe(db_path, user_id, title_id)
+    else:
+        await unsubscribe(db_path, user_id, title_id)
 
     await _show_category_titles_page(query, user_id, category, page, db_path=db_path)
+
+    # Deliver only the title just subscribed to; DONE should just exit.
+    if subscribing:
+        await deliver_latest_editions_on_subscribe(db_path, user_id, context.bot, title_id=title_id)
+
     return SELECT_CATEGORY
 
 
