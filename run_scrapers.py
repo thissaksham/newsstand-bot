@@ -171,11 +171,20 @@ async def send_edition_to_user(
                 # render a broken link; just skip (it ages out of the window).
                 logger.warning("[%s] Skipping edition with non-link file_id (legacy data).", title_name)
                 return
+
+            link_l = link.lower()
+            if "indiags.com" in link_l:
+                source_label = "indiags.com"
+            elif "drive.google.com" in link_l or "google.com" in link_l:
+                source_label = "Google Drive"
+            else:
+                source_label = "source"
+
             msg_text = (
                 f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"Your edition is ready:\n"
-                f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
+                f'<a href="{html_escape(link)}">⬇️ Download ({html_escape(source_label)})</a>'
             )
             await bot.send_message(
                 chat_id=user_id, text=msg_text,

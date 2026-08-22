@@ -22,13 +22,18 @@ INTL = "🌍"
 
 def _render_subs(subs: list[dict], mode: str) -> tuple[str, InlineKeyboardMarkup]:
     """Build the subscription list, split by type — Indian newspapers (grouped by
-    language) and International news/magazines — with an origin emoji on each
-    section header and every title button. ``mode`` is "get" or "remove"."""
+    language), the premium The Hindu / Indian Express category, and International
+    news/magazines — with an origin emoji on each section header and every title
+    button. ``mode`` is "get" or "remove"."""
     newspapers_by_lang: dict[str, list[dict]] = {}
+    premium: list[dict] = []
     magazines: list[dict] = []
     for s in subs:
-        if s.get("category") == "Magazine":
+        category = s.get("category", "Newspaper")
+        if category == "Magazine":
             magazines.append(s)
+        elif category == "The Hindu/Indian Express":
+            premium.append(s)
         else:
             newspapers_by_lang.setdefault(s.get("language") or "Other", []).append(s)
 
@@ -52,6 +57,14 @@ def _render_subs(subs: list[dict], mode: str) -> tuple[str, InlineKeyboardMarkup
             lines.append(f"  • {t['name']}")
             buttons.append([InlineKeyboardButton(
                 f"{action} {INDIAN} {t['name']}", callback_data=f"{prefix}:{t['id']}")])
+        lines.append("")
+
+    if premium:
+        lines.append("📰 <b>The Hindu / Indian Express</b>")
+        for t in premium:
+            lines.append(f"  • {t['name']}")
+            buttons.append([InlineKeyboardButton(
+                f"{action} 📰 {t['name']}", callback_data=f"{prefix}:{t['id']}")])
         lines.append("")
 
     if magazines:

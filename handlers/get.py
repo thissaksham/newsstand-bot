@@ -40,6 +40,18 @@ EDITIONS_PER_PAGE = 8
 DATE_WINDOW_DAYS = 30  # how far back the date picker can go
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _download_link_label(url: str) -> str:
+    """Human-friendly source label for a download URL."""
+    url_l = url.lower()
+    if "drive.google.com" in url_l or "google.com" in url_l:
+        return "Google Drive"
+    if "indiags.com" in url_l:
+        return "indiags.com"
+    return "source"
+
+
 # ── Step 1: /get → choose a language ─────────────────────────────────────────
 
 async def get_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -57,6 +69,8 @@ async def get_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         [InlineKeyboardButton(f"🇮🇳 Indian {lang.title()} Dailies", callback_data=f"get_lang_{lang}")]
         for lang in languages
     ]
+    buttons.append([InlineKeyboardButton(
+        "📰 The Hindu / Indian Express", callback_data="get_cat_The Hindu/Indian Express")])
     buttons.append([InlineKeyboardButton(
         "🌍 International News & Magazines", callback_data="get_magazines")])
 
@@ -120,6 +134,66 @@ async def _show_titles_page(query, context, language: str, page: int) -> int:
 
     await query.edit_message_text(
         f"🇮🇳 <b>Indian {html_escape(language.title())} Dailies</b>  "
+        f"<i>(page {page + 1}/{total_pages})</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Select a title:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+    return SELECT_TITLE
+
+
+# ── Step 2b: category → choose a title (The Hindu / Indian Express) ──────────
+
+async def get_category_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    category = query.data[len("get_cat_"):]
+    context.user_data["get_category"] = category
+    return await _show_category_titles_page(query, context, category, 0)
+
+
+async def handle_category_titles_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    page = int(query.data[len("get_ctpage_"):])
+    category = context.user_data.get("get_category", "")
+    return await _show_category_titles_page(query, context, category, page)
+
+
+async def _show_category_titles_page(query, context, category: str, page: int) -> int:
+    titles = [
+        t for t in Config.get().titles
+        if getattr(t, "category", "Newspaper") == category
+    ]
+    if not titles:
+        await query.edit_message_text(f"📭 No titles available for <b>{html_escape(category)}</b>.", parse_mode="HTML")
+        return ConversationHandler.END
+
+    context.user_data["get_titles"] = titles
+
+    total_pages = max(1, (len(titles) + TITLES_PER_PAGE - 1) // TITLES_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * TITLES_PER_PAGE
+    page_titles = titles[start:start + TITLES_PER_PAGE]
+
+    buttons = [
+        [InlineKeyboardButton(t.name, callback_data=f"get_title_{start + i}")]
+        for i, t in enumerate(page_titles)
+    ]
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"get_ctpage_{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"get_ctpage_{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton("🔙 Cancel", callback_data="get_cancel")])
+
+    label = "📰 The Hindu / Indian Express" if category == "The Hindu/Indian Express" else html_escape(category)
+    await query.edit_message_text(
+        f"{label}\n"
         f"<i>(page {page + 1}/{total_pages})</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Select a title:",
@@ -232,7 +306,7 @@ async def get_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"Here is your edition:\n"
-        f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>',
+        f'<a href="{html_escape(link)}">⬇️ Download ({html_escape(_download_link_label(link))})</a>',
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -421,10 +495,12 @@ get_conversation_handler = ConversationHandler(
     states={
         SELECT_LANGUAGE: [
             CallbackQueryHandler(get_language_selected, pattern="^get_lang_"),
+            CallbackQueryHandler(get_category_selected, pattern="^get_cat_"),
             CallbackQueryHandler(get_magazines_prompt, pattern="^get_magazines$"),
         ],
         SELECT_TITLE: [
             CallbackQueryHandler(handle_titles_page_callback, pattern="^get_tpage_"),
+            CallbackQueryHandler(handle_category_titles_page_callback, pattern="^get_ctpage_"),
             CallbackQueryHandler(get_title_selected, pattern="^get_title_"),
         ],
         SELECT_DATE: [

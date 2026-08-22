@@ -386,4 +386,18 @@ titles:
   category: Newspaper
   scrape_website: careerswave_in
 
+- name: The Hindu
+  slug: the-hindu
+  source_url: https://www.indiags.com/epaper-pdf-download
+  language: English
+  category: The Hindu/Indian Express
+  scrape_website: indiags_com
+
+- name: Indian Express
+  slug: indian-express
+  source_url: https://www.indiags.com/epaper-pdf-download
+  language: English
+  category: The Hindu/Indian Express
+  scrape_website: indiags_com
+
 

@@ -20,6 +20,7 @@ from telegram.ext import (
 
 from database.operations import (
     get_titles_by_language,
+    get_titles_by_category,
     get_all_titles,
     subscribe,
     unsubscribe,
@@ -73,6 +74,16 @@ def _magazine_links_html(links: list[tuple[str, str]]) -> str:
         for domain, href in links
     )
 
+
+def _download_link_label(url: str) -> str:
+    """Return a human-friendly label for a source download URL."""
+    url_l = url.lower()
+    if "drive.google.com" in url_l or "google.com" in url_l:
+        return "Google Drive"
+    if "indiags.com" in url_l:
+        return "indiags.com"
+    return "source"
+
 # ── Conversation States ──────────────────────────────────────────────────────
 SELECT_CATEGORY, AWAITING_MAGAZINE_NAME = range(2)
 
@@ -111,12 +122,13 @@ async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, ca
             text=(
                 f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
                 f"Latest available edition:\n"
-                f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
+                f'<a href="{html_escape(link)}">⬇️ Download ({html_escape(_download_link_label(link))})</a>'
             ),
         )
 
     await log_delivery("", user_id, edition_id, "success")
     return True
+
 
 
 async def handle_getlatest_callback(update, context) -> None:
@@ -253,7 +265,7 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                         if link.startswith(("http://", "https://")):
                             msg_text += (
                                 f"\n\n📰 <b>Latest available edition ({format_date_long(edition_date)}):</b>\n"
-                                f'<a href="{html_escape(link)}">⬇️ Download (Google Drive)</a>'
+                                f'<a href="{html_escape(link)}">⬇️ Download ({html_escape(_download_link_label(link))})</a>'
                             )
                         await _reply(query, update, bot, user_id, msg_text)
                         await log_delivery(db_path, user_id, edition_id, "success")
@@ -302,8 +314,14 @@ async def subscribe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"🇮🇳 Indian {lang.title()} Dailies",
             callback_data=f"lang:{lang}",
         )])
-        
-    # 2. Magazines category
+
+    # 2. Premium English dailies category (The Hindu / Indian Express)
+    buttons.append([InlineKeyboardButton(
+        "📰 The Hindu / Indian Express",
+        callback_data="cat:The Hindu/Indian Express",
+    )])
+
+    # 3. Magazines category
     buttons.append([InlineKeyboardButton(
         "🌍 International News & Magazines",
         callback_data="cat:magazine",
@@ -344,6 +362,10 @@ async def handle_lang_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 callback_data=f"lang:{lang}",
             )])
         buttons.append([InlineKeyboardButton(
+            "📰 The Hindu / Indian Express",
+            callback_data="cat:The Hindu/Indian Express",
+        )])
+        buttons.append([InlineKeyboardButton(
             "🌍 International News & Magazines",
             callback_data="cat:magazine",
         )])
@@ -375,6 +397,8 @@ async def handle_page_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def _show_titles_page(query, user_id: int, language: str, page: int, db_path: str) -> None:
     """Build title list with subscription toggles and pagination."""
     titles = await get_titles_by_language(db_path, language)
+    # Keep only regular newspapers here; premium categories have their own browser.
+    titles = [t for t in titles if t.get("category", "Newspaper") == "Newspaper"]
 
     if not titles:
         await query.edit_message_text(
@@ -481,21 +505,128 @@ async def handle_done_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 
-# ── Callback: Magazines category selected ────────────────────────────────────
+# ── Callback: Category selected (Magazines or The Hindu/Indian Express) ──────
+
+_CATEGORY_LABELS = {
+    "The Hindu/Indian Express": "📰 The Hindu / Indian Express",
+}
 
 async def handle_cat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.edit_message_text(
-        "🌍 <b>International News &amp; Magazines</b>\n"
+    category = query.data.split(":", 1)[1]
+
+    if category == "magazine":
+        await query.edit_message_text(
+            "🌍 <b>International News &amp; Magazines</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Type the name of an international newspaper or magazine to search for "
+            "(e.g. <i>The Economist</i>, <i>The Washington Post</i>):",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Back", callback_data="lang:__back__")
+            ]])
+        )
+        return AWAITING_MAGAZINE_NAME
+
+    # Premium category browser (The Hindu / Indian Express)
+    db_path = context.bot_data["config"].db_path
+    await _show_category_titles_page(query, update.effective_user.id, category, page=0, db_path=db_path)
+    return SELECT_CATEGORY
+
+
+async def handle_category_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    parts = query.data.split(":")
+    category = parts[1]
+    page = int(parts[2])
+    db_path = context.bot_data["config"].db_path
+    await _show_category_titles_page(query, update.effective_user.id, category, page, db_path=db_path)
+    return SELECT_CATEGORY
+
+
+async def _show_category_titles_page(query, user_id: int, category: str, page: int, db_path: str) -> None:
+    """Build title list for a non-language category with subscription toggles."""
+    titles = await get_titles_by_category(db_path, category)
+
+    if not titles:
+        await query.edit_message_text(
+            f"📭 No titles available for <b>{html_escape(category)}</b>.",
+            parse_mode="HTML",
+        )
+        return
+
+    total_pages = max(1, (len(titles) + TITLES_PER_PAGE - 1) // TITLES_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * TITLES_PER_PAGE
+    end = start + TITLES_PER_PAGE
+    page_titles = titles[start:end]
+
+    user_subs = await get_user_subscriptions(db_path, user_id)
+    sub_ids = {sub["id"] for sub in user_subs}
+
+    buttons: list[list[InlineKeyboardButton]] = []
+    for t in page_titles:
+        subscribed = t["id"] in sub_ids
+        icon = "✅" if subscribed else "➕"
+        buttons.append([
+            InlineKeyboardButton(
+                f"{icon} {t['name']}",
+                callback_data=f"cattoggle:{t['id']}:{category}:{page}",
+            )
+        ])
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"catpage:{category}:{page - 1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"catpage:{category}:{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([
+        InlineKeyboardButton("🔙 Categories", callback_data="lang:__back__"),
+        InlineKeyboardButton("✅ Done", callback_data="done"),
+    ])
+
+    label = _CATEGORY_LABELS.get(category, html_escape(category))
+    header = (
+        f"{label}\n"
+        f"<i>(page {page + 1}/{total_pages})</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Type the name of an international newspaper or magazine to search for "
-        "(e.g. <i>The Economist</i>, <i>The Washington Post</i>):",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔙 Back", callback_data="lang:__back__")
-        ]])
+        "Tap a title to subscribe / unsubscribe:"
     )
-    return AWAITING_MAGAZINE_NAME
+
+    await query.edit_message_text(
+        header,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_category_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    user_id = update.effective_user.id
+    db_path = context.bot_data["config"].db_path
+    parts = query.data.split(":")
+    title_id = int(parts[1])
+    category = parts[2]
+    page = int(parts[3])
+
+    user = update.effective_user
+    await register_user(
+        db_path=db_path,
+        user_id=user.id,
+        username=user.username or "",
+        first_name=user.first_name or "",
+    )
+
+    if await is_subscribed(db_path, user_id, title_id):
+        await unsubscribe(db_path, user_id, title_id)
+    else:
+        await subscribe(db_path, user_id, title_id)
+
+    await _show_category_titles_page(query, user_id, category, page, db_path=db_path)
+    return SELECT_CATEGORY
 
 
 # ── Message: Text search query received ──────────────────────────────────────
@@ -665,6 +796,8 @@ subscribe_conversation_handler = ConversationHandler(
             CallbackQueryHandler(handle_cat_callback, pattern="^cat:"),
             CallbackQueryHandler(handle_toggle_callback, pattern="^toggle:"),
             CallbackQueryHandler(handle_page_callback, pattern="^page:"),
+            CallbackQueryHandler(handle_category_page_callback, pattern="^catpage:"),
+            CallbackQueryHandler(handle_category_toggle_callback, pattern="^cattoggle:"),
             CallbackQueryHandler(handle_done_callback, pattern="^done$"),
         ],
         AWAITING_MAGAZINE_NAME: [

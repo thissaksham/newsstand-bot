@@ -19,9 +19,12 @@ async def find_newspaper_link(
     date (``dates_to_try[0]``, lists are newest-first), also checks the paper's
     auto-discovered dailyepaper.in page and keeps whichever hit is newer — so a
     paper missing from the primary through the day still arrives.
+
+    ``title_name`` is forwarded to the scraper module so sources that list
+    multiple titles on one page (e.g. indiags.com) know which card to pick.
     """
     module = importlib.import_module(f"scrapers.{scrape_website}")
-    best = await module.find_download_link(source_url, dates_to_try)
+    best = await module.find_download_link(source_url, dates_to_try, title_name=title_name)
     if best and best[0] == dates_to_try[0]:
         return best
 

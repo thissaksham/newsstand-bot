@@ -175,7 +175,9 @@ def parse_links(html: str) -> dict[str, str]:
     return links
 
 
-async def find_download_link(source_url: str, dates_to_try: list[date]) -> tuple[date, str] | None:
+async def find_download_link(
+    source_url: str, dates_to_try: list[date], *, title_name: str | None = None
+) -> tuple[date, str] | None:
     """Return ``(date, google_drive_url)`` for the first available date in
     ``dates_to_try``, or ``None``. No download — just the link.
 

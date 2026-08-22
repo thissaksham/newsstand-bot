@@ -13,6 +13,8 @@ from .subscribe import (
     handle_page_callback,
     handle_done_callback,
     handle_cat_callback,
+    handle_category_page_callback,
+    handle_category_toggle_callback,
     handle_submag_callback,
 )
 from .subscriptions import handle_unsub_callback
@@ -21,13 +23,15 @@ logger = logging.getLogger(__name__)
 
 # ── Routing table ────────────────────────────────────────────────────────────
 _ROUTES: list[tuple[str, object]] = [
-    ("lang:",       handle_lang_callback),
-    ("cat:",        handle_cat_callback),
-    ("submag:",     handle_submag_callback),
-    ("toggle:",     handle_toggle_callback),
-    ("page:",       handle_page_callback),
-    ("unsub:",      handle_unsub_callback),
-    ("done",        handle_done_callback),
+    ("lang:",           handle_lang_callback),
+    ("cat:",            handle_cat_callback),
+    ("catpage:",        handle_category_page_callback),
+    ("cattoggle:",      handle_category_toggle_callback),
+    ("submag:",         handle_submag_callback),
+    ("toggle:",         handle_toggle_callback),
+    ("page:",           handle_page_callback),
+    ("unsub:",          handle_unsub_callback),
+    ("done",            handle_done_callback),
 ]
 
 

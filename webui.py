@@ -64,6 +64,13 @@ async def api_newspapers(language: str = Query(..., description="English or Hind
     return [{"slug": t.slug, "name": t.name} for t in titles]
 
 
+@app.get("/api/category-titles")
+async def api_category_titles(category: str = Query(..., description="Category name from config.yaml")):
+    """List titles for a non-language category straight from config.yaml."""
+    titles = [t for t in Config.get().titles if getattr(t, "category", "Newspaper") == category]
+    return [{"slug": t.slug, "name": t.name} for t in titles]
+
+
 @app.get("/api/newspaper-link")
 async def api_newspaper_link(slug: str = Query(...)):
     """Scrape the source page and return the latest available download link."""
@@ -86,7 +93,13 @@ async def api_newspaper_link(slug: str = Query(...)):
     if not result:
         return {"found": False, "name": title.name}
     d, url = result
-    return {"found": True, "name": title.name, "date": format_date(d), "url": url}
+    label = "Google Drive"
+    url_l = url.lower()
+    if "indiags.com" in url_l:
+        label = "indiags.com"
+    elif "drive.google.com" not in url_l and "google.com" not in url_l:
+        label = "source"
+    return {"found": True, "name": title.name, "date": format_date(d), "url": url, "label": label}
 
 
 # ─── Magazines ─────────────────────────────────────────────────────────────

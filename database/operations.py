@@ -419,10 +419,10 @@ async def sync_titles_from_config(db_path: str, titles: list) -> None:
         }
         await db.table('titles').upsert(data, on_conflict='slug').execute()
 
-    # Deactivate titles not in config (only newspapers, since magazines are dynamic)
+    # Deactivate titles not in config (all non-magazines, since magazines are dynamic)
     db_titles = await db.table('titles').select('id, slug, category, is_active').execute()
     for row in db_titles.data:
-        if row.get('category') == 'Newspaper' and row['slug'] not in config_slugs and row['is_active'] == 1:
+        if row.get('category') != 'Magazine' and row['slug'] not in config_slugs and row['is_active'] == 1:
             await db.table('titles').update({'is_active': 0}).eq('id', row['id']).execute()
 
 
@@ -444,6 +444,11 @@ async def get_titles_by_language(db_path: str, language: str) -> list[dict]:
     resp = await db.table('titles').select('*').ilike('language', language).eq('is_active', 1).order('name').execute()
     return resp.data
 
+
+async def get_titles_by_category(db_path: str, category: str) -> list[dict]:
+    db = await _get_client()
+    resp = await db.table('titles').select('*').eq('category', category).eq('is_active', 1).order('name').execute()
+    return resp.data
 
 
 async def is_subscribed(db_path: str, user_id: int, title_id: int) -> bool:
