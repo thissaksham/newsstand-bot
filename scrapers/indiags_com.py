@@ -113,12 +113,12 @@ async def _fetch_open_page_link(book_id: str) -> str:
     return it immediately.
     """
     open_url = f"{_BASE_URL}/epaper/open/{book_id}"
-    logger.debug("[indiags] Fetching open page %s", open_url)
+    logger.info("[indiags] Fetching open page %s", open_url)
 
     first_html = await _fetch_html(open_url)
     link = _find_go_link(first_html)
     if link:
-        logger.debug("[indiags] Found go-link on first fetch: %s", link)
+        logger.info("[indiags] Found go-link on first fetch: %s", link)
         return link
 
     logger.info("[indiags] No go-link yet for %s; waiting 20s for unlock...", book_id)
@@ -127,7 +127,7 @@ async def _fetch_open_page_link(book_id: str) -> str:
     second_html = await _fetch_html(open_url)
     link = _find_go_link(second_html)
     if link:
-        logger.debug("[indiags] Found go-link after wait: %s", link)
+        logger.info("[indiags] Found go-link after wait: %s", link)
         return link
 
     raise IndiagsError(f"No /go/ link found on {open_url} after waiting.")
@@ -251,12 +251,15 @@ async def find_download_link(
         logger.error("[indiags] Failed to fetch listing page: %s", e)
         return None
 
+    logger.info("[indiags] Listing page returned %d newspaper card(s): %s", len(papers), [p["name"] for p in papers])
+
     if not papers:
         logger.warning("[indiags] No newspapers found on listing page.")
         return None
 
     for paper in papers:
         if _title_matches(paper["name"], title_name):
+            logger.info("[indiags] Matched '%s' to card '%s' (book_id=%s)", title_name, paper["name"], paper["book_id"])
             try:
                 link = await _fetch_open_page_link(paper["book_id"])
             except IndiagsError as e:

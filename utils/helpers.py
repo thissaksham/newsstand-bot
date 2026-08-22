@@ -245,21 +245,27 @@ async def download_url_to_bytes(
     ``max_size_bytes``. This is used for short-lived premium newspaper links
     that must be converted to Telegram documents before they expire.
     """
+    logger = logging.getLogger(__name__)
     try:
         async with httpx.AsyncClient(
             follow_redirects=True, timeout=timeout, headers=_PREMIUM_HEADERS
         ) as client:
             async with client.stream("GET", url) as resp:
+                logger.info("download_url_to_bytes: %s -> HTTP %s (content-type: %s)", url, resp.status_code, resp.headers.get("content-type"))
                 resp.raise_for_status()
                 total = 0
                 chunks: list[bytes] = []
                 async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
                     total += len(chunk)
                     if total > max_size_bytes:
+                        logger.warning("download_url_to_bytes: %s exceeded %d bytes, aborting.", url, max_size_bytes)
                         return None
                     chunks.append(chunk)
-                return b"".join(chunks)
-    except Exception:
+                body = b"".join(chunks)
+                logger.info("download_url_to_bytes: %s downloaded %d bytes", url, len(body))
+                return body
+    except Exception as e:
+        logger.error("download_url_to_bytes: failed to download %s: %s", url, e)
         return None
 
 

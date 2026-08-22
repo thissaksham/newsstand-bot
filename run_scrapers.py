@@ -337,22 +337,25 @@ async def deliver_premium_pdf_to_subscribers(
     The first reachable subscriber receives the bytes; the returned Telegram
     ``file_id`` is stored and reused for everyone else (and for catch-up later).
     """
-    logger.info("[%s] Downloading premium PDF...", title_name)
+    logger.info("[%s] Downloading premium PDF from %s ...", title_name, go_url)
     pdf_bytes = await download_url_to_bytes(go_url)
     if not pdf_bytes:
         logger.error("[%s] Failed to download premium PDF from %s", title_name, go_url)
         return False
 
     size_mb = len(pdf_bytes) / (1024 * 1024)
+    is_pdf = pdf_bytes[:4] == b"%PDF"
+    logger.info("[%s] Premium PDF downloaded: %.1f MB, is_pdf=%s", title_name, size_mb, is_pdf)
+    if not is_pdf:
+        logger.warning("[%s] Downloaded body does not start with %%PDF. First 200 bytes: %r", title_name, pdf_bytes[:200])
+
     if size_mb > 20:
         logger.error("[%s] Premium PDF is %.1f MB, exceeds Telegram 20 MB limit.", title_name, size_mb)
         return False
 
-    logger.info("[%s] Premium PDF downloaded: %.1f MB", title_name, size_mb)
-
     subscribers = await get_subscribers_for_title("", title_id)
+    logger.info("[%s] Delivering PDF to %d subscriber(s)...", title_name, len(subscribers))
     if not subscribers:
-        logger.info("[%s] No subscribers to deliver PDF to.", title_name)
         return False
 
     file_id: str | None = None
@@ -360,16 +363,20 @@ async def deliver_premium_pdf_to_subscribers(
 
     for user_id in subscribers:
         if await has_been_delivered("", user_id, edition_id):
+            logger.info("[%s] User %s already received this edition.", title_name, user_id)
             continue
 
         if file_id is None:
             # Keep trying subscribers until one is reachable and returns a file_id.
             # _send_premium_pdf_bytes logs Forbidden internally and returns None.
+            logger.info("[%s] Sending PDF bytes to user %s to obtain file_id...", title_name, user_id)
             file_id = await _send_premium_pdf_bytes(bot, user_id, title_name, edition_date, pdf_bytes)
             if file_id:
                 await log_delivery("", user_id, edition_id, "success")
                 sent_any = True
+                logger.info("[%s] Obtained Telegram file_id from user %s", title_name, user_id)
         else:
+            logger.info("[%s] Forwarding PDF file_id to user %s", title_name, user_id)
             ok = await _send_premium_pdf_file_id(bot, user_id, title_name, edition_date, file_id)
             if ok:
                 await log_delivery("", user_id, edition_id, "success")
