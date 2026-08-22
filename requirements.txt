@@ -11,3 +11,5 @@ thefuzz==0.22.*
 apscheduler==3.*
 tzdata  # IANA tz DB fallback so ZoneInfo("Asia/Kolkata") works on Windows / slim containers
 
+playwright==1.49.*  # Optional fallback for indiags.com premium unlock page (browser automation)
+
