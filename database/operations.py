@@ -250,7 +250,21 @@ async def subscribe(db_path: str, user_id: int, title_id: int) -> bool:
 async def unsubscribe(db_path: str, user_id: int, title_id: int) -> bool:
     db = await _get_client()
     resp = await db.table("subscriptions").delete().eq("user_id", user_id).eq("title_id", title_id).execute()
-    return len(resp.data) > 0
+    unsubscribed = len(resp.data) > 0
+
+    # Wipe delivery history for this user + title so a future re-subscribe can
+    # receive the latest edition immediately instead of being blocked by stale
+    # delivery_log rows from a previous subscription.
+    if unsubscribed:
+        try:
+            editions_resp = await db.table("editions").select("id").eq("title_id", title_id).execute()
+            edition_ids = [row["id"] for row in editions_resp.data]
+            if edition_ids:
+                await db.table("delivery_log").delete().eq("user_id", user_id).in_("edition_id", edition_ids).execute()
+        except Exception as e:
+            logger.warning("Failed to clear delivery_log for user=%s title=%s: %s", user_id, title_id, e)
+
+    return unsubscribed
 
 
 @_retry_on_client_error
