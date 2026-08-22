@@ -23,6 +23,7 @@ import time
 import urllib.request
 from datetime import date
 
+import httpx
 from bs4 import BeautifulSoup
 
 from utils.helpers import get_today
@@ -43,6 +44,11 @@ HEADERS = {
     "Referer": "https://www.google.com/",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
+}
+
+_OPEN_PAGE_HEADERS = {
+    **HEADERS,
+    "Referer": "https://www.indiags.com/epaper-pdf-download",
 }
 
 # Cache the listing-page parse for a few minutes so a multi-title scrape does not
@@ -81,39 +87,92 @@ def _extract_book_id(books_url: str) -> str | None:
 
 
 def _find_go_link(html: str) -> str | None:
-    """Search parsed HTML for the ``/go/<token>`` link inside #pdfUnlockBanner."""
-    soup = BeautifulSoup(html, "html.parser")
-    banner = soup.find("div", id="pdfUnlockBanner")
-    if not banner:
-        # Some layouts may put the link directly in the page without the banner
-        # wrapper; accept any /go/ link as a fallback.
-        banner = soup
+    """Search parsed HTML for the ``/go/<token>`` link inside #pdfUnlockBanner.
 
-    for a in banner.find_all("a", href=True):
+    Also scans the whole document and embedded scripts as a fallback.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    # 1. Prefer the banner div described by the user.
+    banner = soup.find("div", id="pdfUnlockBanner")
+    if banner:
+        for a in banner.find_all("a", href=True):
+            href = a["href"].strip()
+            if href.startswith("/go/"):
+                return f"{_BASE_URL}{href}"
+            if "/go/" in href and href.startswith("http"):
+                return href
+
+    # 2. Fall back to any /go/ anchor anywhere on the page.
+    for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         if href.startswith("/go/"):
             return f"{_BASE_URL}{href}"
         if "/go/" in href and href.startswith("http"):
             return href
 
-    # Also look for raw /go/ URLs in script or text content.
-    for match in re.finditer(r"https?://[^\"'<>\s]*?/go/[A-Za-z0-9]+", str(banner)):
+    # 3. Look for raw /go/ URLs in script or text content.
+    for match in re.finditer(r"https?://[^\"'<>\s]*?/go/[A-Za-z0-9]+", str(soup)):
         return match.group(0)
 
     return None
+
+
+async def _fetch_open_page_with_session(book_id: str) -> str:
+    """Fetch the unlock page using a single cookie-aware httpx session.
+
+    The server may set a session cookie on the first request and only reveal the
+    ``/go/`` link to that same session after the countdown. Using one client with
+    a shared cookie jar makes both requests part of the same session.
+    """
+    open_url = f"{_BASE_URL}/epaper/open/{book_id}"
+    logger.info("[indiags] Opening unlock page with cookie session: %s", open_url)
+
+    async with httpx.AsyncClient(
+        headers=_OPEN_PAGE_HEADERS,
+        follow_redirects=True,
+        timeout=30.0,
+    ) as client:
+        resp1 = await client.get(open_url)
+        resp1.raise_for_status()
+        first_html = resp1.text
+        logger.info("[indiags] First open-page fetch: HTTP %s, cookies=%s", resp1.status_code, list(client.cookies.jar))
+
+        link = _find_go_link(first_html)
+        if link:
+            logger.info("[indiags] Found go-link on first fetch: %s", link)
+            return link
+
+        logger.info("[indiags] No go-link yet for %s; waiting 20s for unlock...", book_id)
+        await asyncio.sleep(20)
+
+        resp2 = await client.get(open_url)
+        resp2.raise_for_status()
+        second_html = resp2.text
+        logger.info("[indiags] Second open-page fetch: HTTP %s, cookies=%s", resp2.status_code, list(client.cookies.jar))
+
+        link = _find_go_link(second_html)
+        if link:
+            logger.info("[indiags] Found go-link after wait: %s", link)
+            return link
+
+    raise IndiagsError(f"No /go/ link found on {open_url} after waiting.")
 
 
 async def _fetch_open_page_link(book_id: str) -> str:
     """Visit ``/epaper/open/<id>``, wait for the unlock timer, and return the
     ``/go/`` download URL.
 
-    The site presents a countdown before the link is clickable. We mirror that
-    by fetching the page, sleeping 20 seconds, then re-fetching to grab the
-    revealed banner link. If the link is already present on the first fetch we
-    return it immediately.
+    Uses a cookie-aware httpx session so the unlock timer is honored. Falls back
+    to plain urllib if httpx fails for any reason.
     """
     open_url = f"{_BASE_URL}/epaper/open/{book_id}"
     logger.info("[indiags] Fetching open page %s", open_url)
+
+    try:
+        return await _fetch_open_page_with_session(book_id)
+    except Exception as e:
+        logger.warning("[indiags] Cookie-session fetch failed (%s), falling back to plain urllib.", e)
 
     first_html = await _fetch_html(open_url)
     link = _find_go_link(first_html)
@@ -130,7 +189,19 @@ async def _fetch_open_page_link(book_id: str) -> str:
         logger.info("[indiags] Found go-link after wait: %s", link)
         return link
 
-    raise IndiagsError(f"No /go/ link found on {open_url} after waiting.")
+    snippet = _snippet_around_banner(second_html)
+    logger.warning("[indiags] Unlock page HTML snippet:\n%s", snippet)
+    raise IndiagsError(f"No /go/ link found on {open_url} after waiting (urllib fallback).")
+
+
+def _snippet_around_banner(html: str) -> str:
+    """Return a small text snippet around #pdfUnlockBanner for debugging."""
+    idx = html.lower().find("pdfunlockbanner")
+    if idx == -1:
+        return "(no #pdfUnlockBanner found in HTML)"
+    start = max(0, idx - 200)
+    end = min(len(html), idx + 400)
+    return html[start:end]
 
 
 async def _parse_listing_page(html: str) -> list[dict[str, str]]:
