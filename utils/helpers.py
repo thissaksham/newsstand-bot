@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import html as _html
 import io
+import logging
 import re
 from datetime import date, datetime, timedelta
 from typing import Sequence, TypeVar
