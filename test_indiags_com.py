@@ -98,14 +98,16 @@ def test_get_latest_download_link_cached():
     """
 
     async def fake_fetch(url: str, timeout: float = 30.0) -> str:
-        if "/epaper/open/" in url:
-            return open_html
         return listing_html
+
+    async def fake_open_link(book_id: str) -> str:
+        return "https://www.indiags.com/go/abc123"
 
     # Clear the listing cache so the mock is used.
     indiags_com._listing_cache = (0.0, [])
 
-    with patch.object(indiags_com, "_fetch_html", fake_fetch):
+    with patch.object(indiags_com, "_fetch_html", fake_fetch), \
+         patch.object(indiags_com, "_fetch_open_page_link", fake_open_link):
         result = asyncio.run(
             indiags_com.get_latest_download_link(
                 "https://www.indiags.com/epaper-pdf-download",

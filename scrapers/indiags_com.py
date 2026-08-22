@@ -159,12 +159,77 @@ async def _fetch_open_page_with_session(book_id: str) -> str:
     raise IndiagsError(f"No /go/ link found on {open_url} after waiting.")
 
 
+async def _fetch_open_page_with_playwright(book_id: str) -> str:
+    """Use Playwright (if installed) to load the unlock page in a real browser,
+    wait for the countdown, and extract the ``/go/`` link from the DOM.
+
+    This is the fallback of last resort when the site uses client-side
+    JavaScript/AJAX to reveal the link after the timer.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        raise IndiagsError("Playwright is not installed.")
+
+    open_url = f"{_BASE_URL}/epaper/open/{book_id}"
+    logger.info("[indiags] Opening unlock page with Playwright: %s", open_url)
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent=_OPEN_PAGE_HEADERS["User-Agent"],
+            extra_http_headers={"Accept-Language": _OPEN_PAGE_HEADERS["Accept-Language"]},
+        )
+        page = await context.new_page()
+        await page.goto(open_url, wait_until="networkidle")
+
+        # Try immediately in case the link is already rendered.
+        link = await _find_go_link_in_playwright_page(page)
+        if link:
+            logger.info("[indiags] Playwright found go-link immediately: %s", link)
+            await browser.close()
+            return link
+
+        logger.info("[indiags] Playwright waiting 20s for unlock...")
+        await asyncio.sleep(20)
+
+        # Reload / wait a moment for any AJAX update, then re-scan.
+        await page.reload(wait_until="networkidle")
+        link = await _find_go_link_in_playwright_page(page)
+        await browser.close()
+
+        if link:
+            logger.info("[indiags] Playwright found go-link after wait: %s", link)
+            return link
+
+    raise IndiagsError(f"Playwright could not find /go/ link on {open_url}.")
+
+
+async def _find_go_link_in_playwright_page(page) -> str | None:
+    """Extract a ``/go/`` href from the current Playwright page."""
+    for sel in ["#pdfUnlockBanner a", "a[href*='/go/']", "a[href*='indiags.com/go/']"]:
+        try:
+            href = await page.get_attribute(sel, "href", timeout=2000)
+        except Exception:
+            continue
+        if not href:
+            continue
+        href = href.strip()
+        if href.startswith("/go/"):
+            return f"{_BASE_URL}{href}"
+        if "/go/" in href and href.startswith("http"):
+            return href
+    return None
+
+
 async def _fetch_open_page_link(book_id: str) -> str:
     """Visit ``/epaper/open/<id>``, wait for the unlock timer, and return the
     ``/go/`` download URL.
 
-    Uses a cookie-aware httpx session so the unlock timer is honored. Falls back
-    to plain urllib if httpx fails for any reason.
+    Order:
+    1. Cookie-aware httpx session.
+    2. Plain urllib (legacy, stateless).
+    3. Playwright real-browser fallback (only if playwright is installed).
     """
     open_url = f"{_BASE_URL}/epaper/open/{book_id}"
     logger.info("[indiags] Fetching open page %s", open_url)
@@ -191,7 +256,14 @@ async def _fetch_open_page_link(book_id: str) -> str:
 
     snippet = _snippet_around_banner(second_html)
     logger.warning("[indiags] Unlock page HTML snippet:\n%s", snippet)
-    raise IndiagsError(f"No /go/ link found on {open_url} after waiting (urllib fallback).")
+    logger.warning("[indiags] Plain urllib fallback also failed; trying Playwright if available.")
+
+    try:
+        return await _fetch_open_page_with_playwright(book_id)
+    except Exception as e:
+        logger.warning("[indiags] Playwright fallback failed: %s", e)
+
+    raise IndiagsError(f"No /go/ link found on {open_url} after all fallback methods.")
 
 
 def _snippet_around_banner(html: str) -> str:
