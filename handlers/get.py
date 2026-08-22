@@ -22,7 +22,10 @@ from telegram.ext import (
 )
 
 from config import Config
-from utils.helpers import format_date, format_date_long, get_today, html_escape, magazine_date_label
+from utils.helpers import (
+    format_date, format_date_long, get_today, html_escape, magazine_date_label,
+    download_url_to_bytes, is_url, pdf_buffer,
+)
 from scrapers import find_newspaper_link
 from scrapers.downmagaz_net import (
     search_magazines, scrape_magazine_tag, matches_version, get_download_links,
@@ -302,6 +305,45 @@ async def get_date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
 
     edition_date, link = result
+
+    if title.category == "The Hindu/Indian Express":
+        await query.edit_message_text(
+            f"⏳ Downloading <b>{safe_name}</b> PDF…",
+            parse_mode="HTML",
+        )
+        pdf_bytes = await download_url_to_bytes(link)
+        if not pdf_bytes:
+            await query.edit_message_text(
+                f"❌ Failed to download <b>{safe_name}</b>. The source link may have expired.",
+                parse_mode="HTML",
+            )
+            return ConversationHandler.END
+        if len(pdf_bytes) > 20 * 1024 * 1024:
+            await query.edit_message_text(
+                f"❌ <b>{safe_name}</b> PDF is too large to send via Telegram ({len(pdf_bytes)//1024//1024} MB).",
+                parse_mode="HTML",
+            )
+            return ConversationHandler.END
+        try:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=pdf_buffer(pdf_bytes),
+                caption=(
+                    f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"Your edition is ready. 📄"
+                ),
+                parse_mode="HTML",
+                filename=f"{title.name.replace(' ', '_')}_{edition_date.isoformat()}.pdf",
+            )
+            await query.delete_message()
+        except Exception as e:
+            logger.error("[/get] Failed to send premium PDF for %s: %s", title.slug, e)
+            await query.edit_message_text(
+                f"❌ Failed to send <b>{safe_name}</b> PDF.", parse_mode="HTML"
+            )
+        return ConversationHandler.END
+
     await query.edit_message_text(
         f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"

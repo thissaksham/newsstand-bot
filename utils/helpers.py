@@ -5,11 +5,13 @@ General-purpose utility functions for the Newsstand Bot.
 from __future__ import annotations
 
 import html as _html
+import io
 import re
 from datetime import date, datetime, timedelta
 from typing import Sequence, TypeVar
 from zoneinfo import ZoneInfo
 
+import httpx
 from thefuzz import fuzz, process
 
 T = TypeVar("T")
@@ -215,3 +217,59 @@ def is_recent_edition(
     ):
         return True
     return edition_date >= today - timedelta(days=days)
+
+
+# ── premium PDF downloads ───────────────────────────────────────────
+
+_PREMIUM_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-IN,en;q=0.9",
+    "Referer": "https://www.indiags.com/",
+}
+
+
+async def download_url_to_bytes(
+    url: str,
+    *,
+    timeout: float = 60.0,
+    max_size_bytes: int = 25 * 1024 * 1024,
+) -> bytes | None:
+    """Download ``url`` (following redirects) and return the response body.
+
+    Returns ``None`` if the request fails or the response is larger than
+    ``max_size_bytes``. This is used for short-lived premium newspaper links
+    that must be converted to Telegram documents before they expire.
+    """
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=timeout, headers=_PREMIUM_HEADERS
+        ) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                total = 0
+                chunks: list[bytes] = []
+                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                    total += len(chunk)
+                    if total > max_size_bytes:
+                        return None
+                    chunks.append(chunk)
+                return b"".join(chunks)
+    except Exception:
+        return None
+
+
+def is_url(value: str) -> bool:
+    """Return True if ``value`` looks like an http(s) URL."""
+    return value.startswith(("http://", "https://"))
+
+
+def pdf_buffer(pdf_bytes: bytes) -> io.BytesIO:
+    """Wrap PDF bytes in a BytesIO buffer suitable for ``send_document``."""
+    buf = io.BytesIO(pdf_bytes)
+    buf.seek(0)
+    return buf

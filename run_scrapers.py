@@ -46,7 +46,10 @@ from database.operations import (
     upsert_scrape_status, get_failed_scrapes, _get_client,
     get_edition, prune_delivery_log,
 )
-from utils.helpers import get_today, format_date_long, html_escape, is_recent_edition, magazine_date_label
+from utils.helpers import (
+    get_today, format_date_long, html_escape, is_recent_edition,
+    magazine_date_label, download_url_to_bytes, is_url, pdf_buffer,
+)
 from scrapers import find_newspaper_link
 from scrapers.downmagaz_net import (
     get_download_links,
@@ -163,6 +166,18 @@ async def send_edition_to_user(
                 # Post has no download links yet — fail so it's retried next
                 # cycle instead of being silently marked delivered.
                 raise RuntimeError(f"No download links available yet for {title_name}")
+        elif category == "The Hindu/Indian Express":
+            # Premium titles are sent as Telegram documents. ``file_id`` should be
+            # a Telegram document file_id; if it is still a URL the link has
+            # expired and we cannot re-download it during catch-up.
+            stored = file_id.split(",")[0]
+            if is_url(stored):
+                raise RuntimeError("Expired premium URL in catch-up")
+            ok = await _send_premium_pdf_file_id(bot, user_id, title_name, edition_date, stored)
+            if not ok:
+                raise RuntimeError("Failed to send premium PDF")
+            return
+
         else:
             # file_id holds the newspaper's direct source download link.
             link = file_id.split(",")[0]
@@ -220,6 +235,155 @@ async def send_edition_to_user(
 
     await log_delivery("", user_id, edition_id, "failed")
     return False
+
+
+# ─── Premium PDF delivery (The Hindu / Indian Express) ─────────────────────
+
+async def _send_premium_pdf_bytes(
+    bot: Bot, user_id: int, title_name: str, edition_date: date, pdf_bytes: bytes
+) -> str | None:
+    """Send PDF bytes to one user and return the Telegram document ``file_id``.
+
+    Returns ``None`` on failure. ``Forbidden`` users are treated as delivered so
+    catch-up does not retry them forever.
+    """
+    safe_name = html_escape(title_name)
+    caption = (
+        f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Your edition is ready. 📄"
+    )
+    filename = f"{title_name.replace(' ', '_')}_{edition_date.isoformat()}.pdf"
+
+    async def _send():
+        return await bot.send_document(
+            chat_id=user_id,
+            document=pdf_buffer(pdf_bytes),
+            caption=caption,
+            parse_mode="HTML",
+            filename=filename,
+        )
+
+    try:
+        msg = await _send()
+        return msg.document.file_id if msg.document else None
+    except Forbidden as e:
+        logger.warning("[%s] User %s unreachable (%s) — not retrying.", title_name, user_id, e)
+        return None
+    except RetryAfter as e:
+        logger.warning("Rate limited delivering PDF to %s. Sleeping %ss...", user_id, e.retry_after)
+        await asyncio.sleep(e.retry_after)
+        try:
+            msg = await _send()
+            return msg.document.file_id if msg.document else None
+        except Forbidden as ex:
+            logger.warning("[%s] User %s unreachable on retry (%s) — not retrying.", title_name, user_id, ex)
+            return None
+        except Exception as ex:
+            logger.error("[%s] Retry failed for user %s: %s", title_name, user_id, ex)
+            return None
+    except Exception as e:
+        logger.error("[%s] Failed to send PDF to %s: %s", title_name, user_id, e)
+        return None
+
+
+async def _send_premium_pdf_file_id(
+    bot: Bot, user_id: int, title_name: str, edition_date: date, file_id: str
+) -> bool:
+    """Send an already-uploaded PDF to one user using its Telegram ``file_id``."""
+    safe_name = html_escape(title_name)
+    caption = (
+        f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Your edition is ready. 📄"
+    )
+
+    async def _send():
+        await bot.send_document(
+            chat_id=user_id,
+            document=file_id,
+            caption=caption,
+            parse_mode="HTML",
+        )
+
+    try:
+        await _send()
+        return True
+    except Forbidden as e:
+        logger.warning("[%s] User %s unreachable (%s) — not retrying.", title_name, user_id, e)
+        return True
+    except RetryAfter as e:
+        logger.warning("Rate limited delivering PDF to %s. Sleeping %ss...", user_id, e.retry_after)
+        await asyncio.sleep(e.retry_after)
+        try:
+            await _send()
+            return True
+        except Forbidden as ex:
+            logger.warning("[%s] User %s unreachable on retry (%s) — not retrying.", title_name, user_id, ex)
+            return True
+        except Exception as ex:
+            logger.error("[%s] Retry failed for user %s: %s", title_name, user_id, ex)
+            return False
+    except Exception as e:
+        logger.error("[%s] Failed to send PDF to %s: %s", title_name, user_id, e)
+        return False
+
+
+async def deliver_premium_pdf_to_subscribers(
+    bot: Bot, edition_id: int, go_url: str, title_id: int, title_name: str, edition_date: date
+) -> bool:
+    """Download a premium PDF once and send it to all subscribers.
+
+    The first reachable subscriber receives the bytes; the returned Telegram
+    ``file_id`` is stored and reused for everyone else (and for catch-up later).
+    """
+    logger.info("[%s] Downloading premium PDF...", title_name)
+    pdf_bytes = await download_url_to_bytes(go_url)
+    if not pdf_bytes:
+        logger.error("[%s] Failed to download premium PDF from %s", title_name, go_url)
+        return False
+
+    size_mb = len(pdf_bytes) / (1024 * 1024)
+    if size_mb > 20:
+        logger.error("[%s] Premium PDF is %.1f MB, exceeds Telegram 20 MB limit.", title_name, size_mb)
+        return False
+
+    logger.info("[%s] Premium PDF downloaded: %.1f MB", title_name, size_mb)
+
+    subscribers = await get_subscribers_for_title("", title_id)
+    if not subscribers:
+        logger.info("[%s] No subscribers to deliver PDF to.", title_name)
+        return False
+
+    file_id: str | None = None
+    sent_any = False
+
+    for user_id in subscribers:
+        if await has_been_delivered("", user_id, edition_id):
+            continue
+
+        if file_id is None:
+            # Keep trying subscribers until one is reachable and returns a file_id.
+            # _send_premium_pdf_bytes logs Forbidden internally and returns None.
+            file_id = await _send_premium_pdf_bytes(bot, user_id, title_name, edition_date, pdf_bytes)
+            if file_id:
+                await log_delivery("", user_id, edition_id, "success")
+                sent_any = True
+        else:
+            ok = await _send_premium_pdf_file_id(bot, user_id, title_name, edition_date, file_id)
+            if ok:
+                await log_delivery("", user_id, edition_id, "success")
+                sent_any = True
+
+        await asyncio.sleep(0.2)
+
+    if file_id:
+        await update_edition_status("", edition_id=edition_id, status="delivered", file_id=file_id)
+        logger.info("[%s] Premium PDF delivered. Stored Telegram file_id.", title_name)
+    else:
+        logger.error("[%s] Could not obtain a Telegram file_id; no PDF was delivered.", title_name)
+
+    return sent_any
 
 
 # ─── Magazine processing ──────────────────────────────────────────────────
@@ -290,7 +454,10 @@ async def process_magazine_title(bot: Bot, title: dict, today: date):
     await upsert_scrape_status("", title_id, today, status="pending", increment_attempts=False)
 
 
-async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str, newspaper_date: date):
+async def deliver_to_subscribers(
+    bot: Bot, edition_id: int, file_id: str, title_id: int, title_name: str,
+    newspaper_date: date, category: str = "Newspaper",
+):
     """Deliver an edition to all subscribed users using the shared helper."""
     subscribers = await get_subscribers_for_title("", title_id)
     logger.info("[%s] Found %d subscribers for delivery.", title_name, len(subscribers))
@@ -298,7 +465,7 @@ async def deliver_to_subscribers(bot: Bot, edition_id: int, file_id: str, title_
     for user_id in subscribers:
         if await has_been_delivered("", user_id, edition_id):
             continue
-        await send_edition_to_user(bot, user_id, edition_id, file_id, title_name, newspaper_date)
+        await send_edition_to_user(bot, user_id, edition_id, file_id, title_name, newspaper_date, category)
         await asyncio.sleep(0.1)  # Small delay to avoid rate limits
 
 
@@ -350,7 +517,9 @@ async def catch_up_deliveries(bot: Bot, scrape_date: date):
 
         if not await has_been_delivered("", user_id, edition_id):
             logger.info("[Catch-up] Delivering %s to %s...", ed["title_name"], user_id)
-            await send_edition_to_user(bot, user_id, edition_id, ed["file_id"], ed["title_name"], edition_date, category)
+            await send_edition_to_user(
+                bot, user_id, edition_id, ed["file_id"], ed["title_name"], edition_date, category,
+            )
             await asyncio.sleep(0.2)
 
 
@@ -418,7 +587,10 @@ async def _run_scrape_cycle_inner(bot: Bot, target_slug, only_categories, is_man
             if existing_edition and existing_edition.get("file_id") and existing_edition.get("status") == "delivered":
                 logger.info("[%s] Already found today. Delivering link to subscribers.", name)
                 await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
-                await deliver_to_subscribers(bot, existing_edition["id"], existing_edition["file_id"], title["id"], name, today)
+                await deliver_to_subscribers(
+                    bot, existing_edition["id"], existing_edition["file_id"],
+                    title["id"], name, today, category,
+                )
                 continue
 
             source_module_name = title.get("source")
@@ -446,10 +618,35 @@ async def _run_scrape_cycle_inner(bot: Bot, target_slug, only_categories, is_man
                 logger.info("[%s] Edition for %s already recorded. Delivering link.", name, newspaper_date)
                 if newspaper_date == today or today.weekday() == 6:
                     await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
-                await deliver_to_subscribers(bot, existing_edition["id"], existing_edition["file_id"], title["id"], name, newspaper_date)
+                await deliver_to_subscribers(
+                    bot, existing_edition["id"], existing_edition["file_id"],
+                    title["id"], name, newspaper_date, category,
+                )
                 continue
 
-            # Store the link only (no PDF download, no Telegram channel) and deliver it.
+            # Premium titles: download the actual PDF and send as Telegram documents
+            # because the source /go/ links expire within a minute.
+            if category == "The Hindu/Indian Express":
+                if existing_edition:
+                    edition_id = existing_edition["id"]
+                else:
+                    edition_id = await add_edition(
+                        db_path="", title_id=title["id"], edition_date=newspaper_date,
+                        download_url=download_link, status="stored",
+                    )
+
+                ok = await deliver_premium_pdf_to_subscribers(
+                    bot, edition_id, download_link, title["id"], name, newspaper_date,
+                )
+                if not ok:
+                    await upsert_scrape_status("", title["id"], today, status="failed", increment_attempts=True)
+                    continue
+
+                if newspaper_date == today or today.weekday() == 6:
+                    await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=True)
+                continue
+
+            # Regular link-share titles (Google Drive, etc.)
             if existing_edition:
                 edition_id = existing_edition["id"]
             else:
@@ -463,7 +660,7 @@ async def _run_scrape_cycle_inner(bot: Bot, target_slug, only_categories, is_man
                 await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=True)
 
             logger.info("[%s] Link recorded for %s. Delivering to subscribers.", name, newspaper_date)
-            await deliver_to_subscribers(bot, edition_id, download_link, title["id"], name, newspaper_date)
+            await deliver_to_subscribers(bot, edition_id, download_link, title["id"], name, newspaper_date, category)
 
         except Exception:
             logger.exception("[%s] Unhandled error during scrape. Continuing to next title.", name)

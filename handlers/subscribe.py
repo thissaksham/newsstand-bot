@@ -34,7 +34,10 @@ from database.operations import (
     log_delivery,
     has_been_delivered,
 )
-from utils.helpers import format_date_long, html_escape, magazine_date_label
+from utils.helpers import (
+    format_date_long, html_escape, magazine_date_label,
+    download_url_to_bytes, is_url, pdf_buffer,
+)
 from scrapers.downmagaz_net import (
     search_magazines,
     scrape_magazine_tag,
@@ -88,9 +91,68 @@ def _download_link_label(url: str) -> str:
 SELECT_CATEGORY, AWAITING_MAGAZINE_NAME = range(2)
 
 
+async def _send_premium_pdf_to_user(
+    bot, user_id: int, title_name: str, edition_date: datetime.date,
+    file_id: str, download_url: str | None,
+) -> bool:
+    """Send a premium title's PDF to one user.
+
+    If ``file_id`` is a Telegram document file_id it is forwarded; otherwise the
+    short-lived source URL is downloaded and uploaded as a document.
+    """
+    safe_name = html_escape(title_name)
+    caption = (
+        f"📰 <b>{safe_name}</b> — {format_date_long(edition_date)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Your edition is ready. 📄"
+    )
+
+    if file_id and not is_url(file_id):
+        try:
+            await bot.send_document(
+                chat_id=user_id, document=file_id, caption=caption, parse_mode="HTML"
+            )
+            return True
+        except Exception as e:
+            logger.error("[%s] Failed to forward premium PDF to %s: %s", title_name, user_id, e)
+            return False
+
+    url = download_url or file_id
+    if not url:
+        return False
+
+    pdf_bytes = await download_url_to_bytes(url)
+    if not pdf_bytes:
+        logger.error("[%s] Failed to download premium PDF for user %s", title_name, user_id)
+        return False
+
+    if len(pdf_bytes) > 20 * 1024 * 1024:
+        try:
+            await bot.send_message(
+                chat_id=user_id, parse_mode="HTML",
+                text=f"📰 <b>{safe_name}</b> — PDF is too large to send via Telegram ({len(pdf_bytes)//1024//1024} MB).",
+            )
+        except Exception:
+            pass
+        return False
+
+    try:
+        await bot.send_document(
+            chat_id=user_id,
+            document=pdf_buffer(pdf_bytes),
+            caption=caption,
+            parse_mode="HTML",
+            filename=f"{title_name.replace(' ', '_')}_{edition_date.isoformat()}.pdf",
+        )
+        return True
+    except Exception as e:
+        logger.error("[%s] Failed to send premium PDF to %s: %s", title_name, user_id, e)
+        return False
+
+
 async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, category: str, edition: dict) -> bool:
-    """Deliver one already-stored edition's download link(s) to a single user and
-    log the delivery. Assumes the caller checked it isn't a dup.
+    """Deliver one already-stored edition's download link(s) or PDF to a single
+    user and log the delivery. Assumes the caller checked it isn't a dup.
 
     Returns True only if the edition was actually sent — never logs a delivery
     for a message that didn't go out, so catch-up can retry later."""
@@ -113,6 +175,12 @@ async def _deliver_stored_edition_to_user(bot, user_id: int, title_name: str, ca
                 f"{_magazine_links_html(links)}"
             ),
         )
+    elif category == "The Hindu/Indian Express":
+        if not await _send_premium_pdf_to_user(
+            bot, user_id, title_name, edition_date,
+            file_id, edition.get("download_url"),
+        ):
+            return False
     else:
         link = file_id.split(",")[0]
         if not link.startswith(("http://", "https://")):
@@ -258,6 +326,17 @@ async def deliver_latest_editions_on_subscribe(db_path: str, user_id: int, bot, 
                     # otherwise catch-up retries once mirrors appear.
                     if links and not already_delivered:
                         await log_delivery(db_path, user_id, edition_id, "success")
+                elif category == "The Hindu/Indian Express":
+                    if not already_delivered:
+                        await _reply(query, update, bot, user_id, confirm_text)
+                        ok = await _send_premium_pdf_to_user(
+                            bot, user_id, title_name, edition_date,
+                            file_id, latest_edition.get("download_url"),
+                        )
+                        if ok:
+                            await log_delivery(db_path, user_id, edition_id, "success")
+                    else:
+                        await _reply(query, update, bot, user_id, confirm_text)
                 else:
                     if not already_delivered:
                         link = file_id.split(",")[0]
