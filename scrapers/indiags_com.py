@@ -28,6 +28,7 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import date
+from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
@@ -59,7 +60,7 @@ _OPEN_PAGE_HEADERS = {
 
 # Cache the listing-page parse for a few minutes so a multi-title scrape does not
 # refetch the same grid repeatedly. Tuple of (expires_at, papers).
-_listing_cache: tuple[float, list[dict[str, str]]] = (0.0, [])
+_listing_cache: tuple[float, list[dict[str, Any]]] = (0.0, [])
 _LISTING_TTL_SECONDS = 300
 
 
@@ -95,6 +96,36 @@ async def _fetch_html(url: str, timeout: float = 30.0) -> str:
 def _normalise_name(name: str) -> str:
     """Strip extra whitespace and lowercase for fuzzy matching."""
     return re.sub(r"\s+", " ", name.strip()).lower()
+
+
+_MONTH_ABBREVS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _parse_card_date(text: str) -> date | None:
+    """Parse a human-readable date from a listing card's meta element.
+
+    Handles strings like ``22 Aug 2026``, ``22 Aug, 2026``, ``22-Aug-2026``.
+    Returns ``None`` if no recognisable date is found.
+    """
+    if not text:
+        return None
+    match = re.search(
+        r"(\d{1,2})\s*[-/.,]?\s*([A-Za-z]{3,})\s*[-/.,]?\s*(\d{4})",
+        text,
+    )
+    if not match:
+        return None
+    day_str, month_str, year_str = match.groups()
+    month_num = _MONTH_ABBREVS.get(month_str.lower()[:3])
+    if not month_num:
+        return None
+    try:
+        return date(int(year_str), month_num, int(day_str))
+    except ValueError:
+        return None
 
 
 def _extract_book_id(books_url: str) -> str | None:
@@ -370,10 +401,13 @@ def _snippet_around_banner(html: str) -> str:
     return html[start:end]
 
 
-async def _parse_listing_page(html: str) -> list[dict[str, str]]:
+async def _parse_listing_page(html: str) -> list[dict[str, Any]]:
     """Return the list of newspapers from ``div.ep-grid``.
 
-    Each item is ``{"name": str, "books_url": str, "book_id": str}``.
+    Each item is ``{"name": str, "books_url": str, "book_id": str,
+    "edition_date": date | None}``. The edition date is read from the card's
+    ``.meta`` element (e.g. "22 Aug 2026") so we label the paper correctly even
+    when the site still shows yesterday's edition after midnight IST.
     """
     soup = BeautifulSoup(html, "html.parser")
     grid = soup.find("div", class_="ep-grid")
@@ -383,7 +417,7 @@ async def _parse_listing_page(html: str) -> list[dict[str, str]]:
         grid = soup
         logger.warning("[indiags] div.ep-grid not found; scanning full page.")
 
-    papers: list[dict[str, str]] = []
+    papers: list[dict[str, Any]] = []
     seen_ids = set()
 
     # Each newspaper card may be a direct child or nested inside the grid.
@@ -406,10 +440,11 @@ async def _parse_listing_page(html: str) -> list[dict[str, str]]:
         if not book_id or book_id in seen_ids:
             continue
 
-        # Try to extract the newspaper name. Prefer a dedicated title element,
-        # otherwise use the card's own readable text.
+        # Try to extract the newspaper name. Prefer the site's ``.ttl`` element,
+        # otherwise fall back to other common title elements or the card text.
         title_el = (
-            card.find(class_="title")
+            card.find(class_="ttl")
+            or card.find(class_="title")
             or card.find(class_="ep-title")
             or card.find("h3")
             or card.find("h4")
@@ -424,13 +459,26 @@ async def _parse_listing_page(html: str) -> list[dict[str, str]]:
         if not name:
             continue
 
+        # The card's .body > .meta carries the real edition date (e.g. "22 Aug 2026").
+        edition_date: date | None = None
+        body = card.find("div", class_="body")
+        if body:
+            meta = body.find(class_="meta")
+            if meta:
+                edition_date = _parse_card_date(meta.get_text(strip=True))
+
         seen_ids.add(book_id)
-        papers.append({"name": name, "books_url": books_url, "book_id": book_id})
+        papers.append({
+            "name": name,
+            "books_url": books_url,
+            "book_id": book_id,
+            "edition_date": edition_date,
+        })
 
     return papers
 
 
-async def list_papers() -> list[dict[str, str]]:
+async def list_papers() -> list[dict[str, Any]]:
     """Return the current set of newspapers on the indiags listing page.
 
     The result is cached for ``_LISTING_TTL_SECONDS`` to avoid redundant fetches
@@ -471,11 +519,11 @@ async def find_download_link(
     *,
     title_name: str | None = None,
 ) -> tuple[date, str] | None:
-    """Return ``(today, go_url)`` for the configured title.
+    """Return ``(edition_date, go_url)`` for the configured title.
 
     ``source_url`` is the title's configured source URL; for indiags titles it
     is the shared listing page. ``dates_to_try`` is ignored because the listing
-    page always shows today's editions. ``title_name`` is required so we know
+    page only carries the latest edition. ``title_name`` is required so we know
     which newspaper in the grid to pick.
     """
     if not title_name:
@@ -496,15 +544,18 @@ async def find_download_link(
 
     for paper in papers:
         if _title_matches(paper["name"], title_name):
-            logger.info("[indiags] Matched '%s' to card '%s' (book_id=%s)", title_name, paper["name"], paper["book_id"])
+            edition_date = paper.get("edition_date") or get_today()
+            logger.info(
+                "[indiags] Matched '%s' to card '%s' (book_id=%s, edition_date=%s)",
+                title_name, paper["name"], paper["book_id"], edition_date,
+            )
             try:
                 link = await _fetch_open_page_link(paper["book_id"])
             except IndiagsError as e:
                 logger.error("[indiags] %s", e)
                 return None
-            today = get_today()
-            logger.info("[indiags] Found %s for %s -> %s", title_name, today, link)
-            return today, link
+            logger.info("[indiags] Found %s for %s -> %s", title_name, edition_date, link)
+            return edition_date, link
 
     logger.warning(
         "[indiags] Title '%s' not found among %s",
