@@ -591,7 +591,16 @@ async def _run_scrape_cycle_inner(bot: Bot, target_slug, only_categories, is_man
                 continue
 
             existing_edition = await get_edition("", title["id"], today)
-            if existing_edition and existing_edition.get("file_id") and existing_edition.get("status") == "delivered":
+            # Premium newspaper sources (indiags.com) may still carry yesterday's
+            # edition after midnight IST, so an edition stored under ``today`` may
+            # not actually be today's paper. Always re-scrape those to get the
+            # real date + fresh /go/ link; regular sources keep the shortcut.
+            if (
+                category != "The Hindu/Indian Express"
+                and existing_edition
+                and existing_edition.get("file_id")
+                and existing_edition.get("status") == "delivered"
+            ):
                 logger.info("[%s] Already found today. Delivering link to subscribers.", name)
                 await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
                 await deliver_to_subscribers(
