@@ -68,23 +68,36 @@ class IndiagsError(Exception):
     """Raised when the indiags.com flow cannot produce a download link."""
 
 
+def _fetch_with_retry(url: str, timeout: float, max_retries: int = 3) -> tuple[str, str]:
+    """Fetch a page with urllib, retrying on rate-limit (429) errors."""
+    req = urllib.request.Request(url, headers=HEADERS)
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                final_url = resp.geturl()
+                raw = resp.read()
+                encoding = resp.headers.get_content_charset("utf-8")
+                return raw.decode(encoding, errors="replace"), final_url
+        except urllib.error.HTTPError as e:
+            last_exc = e
+            if e.code == 429 and attempt < max_retries:
+                sleep = 2 ** attempt
+                logger.warning("[indiags] HTTP %s for %s; retrying in %ss...", e.code, url, sleep)
+                time.sleep(sleep)
+                continue
+            raise
+    raise last_exc or RuntimeError("Unexpected retry exhaustion")
+
+
 async def _fetch_html_and_url(url: str, timeout: float = 30.0) -> tuple[str, str]:
     """Fetch a page synchronously (urllib) and return (html, final_url).
 
     ``final_url`` includes the fragment if the server put one on the redirect
     Location and the redirect handler preserved it.
     """
-    req = urllib.request.Request(url, headers=HEADERS)
-
-    def _fetch() -> tuple[str, str]:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            final_url = resp.geturl()
-            raw = resp.read()
-            encoding = resp.headers.get_content_charset("utf-8")
-            return raw.decode(encoding, errors="replace"), final_url
-
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _fetch)
+    return await loop.run_in_executor(None, _fetch_with_retry, url, timeout)
 
 
 async def _fetch_html(url: str, timeout: float = 30.0) -> str:
@@ -205,6 +218,34 @@ def _find_go_link(html: str) -> str | None:
     return None
 
 
+async def _get_with_retry(
+    client: httpx.AsyncClient, url: str, *, max_retries: int = 3, **kwargs
+) -> httpx.Response:
+    """Make an httpx GET, retrying on 429 / transient errors with backoff."""
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = await client.get(url, **kwargs)
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries:
+                sleep = 2 ** attempt
+                logger.warning("[indiags] Request failed for %s; retrying in %ss: %s", url, sleep, e)
+                await asyncio.sleep(sleep)
+                continue
+            raise
+
+        if resp.status_code == 429 and attempt < max_retries:
+            sleep = 2 ** attempt
+            logger.warning("[indiags] HTTP 429 for %s; retrying in %ss...", url, sleep)
+            await asyncio.sleep(sleep)
+            continue
+
+        return resp
+
+    raise last_exc or RuntimeError("Unexpected retry exhaustion")
+
+
 async def _fetch_open_page_with_session(book_id: str) -> str:
     """Fetch the unlock page using a single cookie-aware httpx session.
 
@@ -223,7 +264,7 @@ async def _fetch_open_page_with_session(book_id: str) -> str:
     ) as client:
         # 1. Try without following redirects so we can read the Location header
         #    and its fragment intact.
-        resp_redirect = await client.get(open_url, follow_redirects=False)
+        resp_redirect = await _get_with_retry(client, open_url, follow_redirects=False)
         location = resp_redirect.headers.get("location", "")
         if location:
             logger.info("[indiags] Redirect Location: %s", location)
@@ -233,7 +274,7 @@ async def _fetch_open_page_with_session(book_id: str) -> str:
                 return link
 
         # 2. Follow redirects and check if the final URL retained the fragment.
-        resp1 = await client.get(open_url)
+        resp1 = await _get_with_retry(client, open_url)
         resp1.raise_for_status()
         final_url = str(resp1.url)
         logger.info("[indiags] First open-page fetch: HTTP %s, final_url=%s, cookies=%s", resp1.status_code, final_url, list(client.cookies.jar))
@@ -252,7 +293,7 @@ async def _fetch_open_page_with_session(book_id: str) -> str:
         logger.info("[indiags] No go-link yet for %s; waiting 20s for unlock...", book_id)
         await asyncio.sleep(20)
 
-        resp2 = await client.get(open_url)
+        resp2 = await _get_with_retry(client, open_url)
         resp2.raise_for_status()
         second_html = resp2.text
         final_url2 = str(resp2.url)

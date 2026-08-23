@@ -396,8 +396,13 @@ async def get_pending_scrapes(db_path: str, scrape_date: date, max_attempts: int
             pending.append(t)
             continue
 
+        category = t.get("category", "Newspaper")
         st = status_map.get(tid)
         if not st:
+            pending.append(t)
+        elif category == "The Hindu/Indian Express":
+            # Premium titles use short-lived /go/ links and may switch dates
+            # after midnight IST, so they must be re-scraped every cycle.
             pending.append(t)
         elif st["status"] in ("pending", "failed") and st["attempts"] < max_attempts:
             pending.append(t)
