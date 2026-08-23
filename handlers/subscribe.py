@@ -208,12 +208,27 @@ async def handle_getlatest_callback(update, context) -> None:
     title_id = int(query.data.split(":", 1)[1])
 
     db = await _get_client()
-    t = await db.table("titles").select("name, category").eq("id", title_id).execute()
+    t = await db.table("titles").select("name, category, slug").eq("id", title_id).execute()
     if not t.data:
         await context.bot.send_message(user_id, "⚠️ That title no longer exists.")
         return
     name = t.data[0]["name"]
     category = t.data[0].get("category", "Newspaper")
+    slug = t.data[0].get("slug", "")
+
+    # Premium titles must be re-scraped on /getlatest because the short-lived
+    # /go/ links expire and the stored Telegram file_id may point to yesterday's
+    # paper that was mislabelled with today's date.
+    if category == "The Hindu/Indian Express":
+        await context.bot.send_message(
+            user_id,
+            f"⏳ Fetching the latest <b>{html_escape(name)}</b>…",
+            parse_mode="HTML",
+        )
+        _track_task(asyncio.create_task(
+            _scrape_and_deliver_one(context.bot, slug, title_id, user_id, category, name)
+        ))
+        return
 
     ed = await db.table("editions").select("*").eq("title_id", title_id)\
         .eq("status", "delivered").order("date", desc=True).limit(1).execute()
