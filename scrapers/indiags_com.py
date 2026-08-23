@@ -68,8 +68,14 @@ class IndiagsError(Exception):
     """Raised when the indiags.com flow cannot produce a download link."""
 
 
-def _fetch_with_retry(url: str, timeout: float, max_retries: int = 3) -> tuple[str, str]:
-    """Fetch a page with urllib, retrying on rate-limit (429) errors."""
+def _fetch_with_retry(url: str, timeout: float, max_retries: int = 5) -> tuple[str, str]:
+    """Fetch a page with urllib, retrying on rate-limit (429) errors.
+
+    Uses exponential backoff with a longer initial delay because indiags.com
+    rate-limits shared cloud IPs aggressively.
+    """
+    import random
+
     req = urllib.request.Request(url, headers=HEADERS)
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
@@ -82,8 +88,9 @@ def _fetch_with_retry(url: str, timeout: float, max_retries: int = 3) -> tuple[s
         except urllib.error.HTTPError as e:
             last_exc = e
             if e.code == 429 and attempt < max_retries:
-                sleep = 2 ** attempt
-                logger.warning("[indiags] HTTP %s for %s; retrying in %ss...", e.code, url, sleep)
+                # Backoff: 5s, 10s, 20s, 40s, 80s plus small jitter.
+                sleep = (5 * (2 ** attempt)) + random.uniform(0, 1)
+                logger.warning("[indiags] HTTP %s for %s; retrying in %.1fs...", e.code, url, sleep)
                 time.sleep(sleep)
                 continue
             raise
@@ -219,9 +226,11 @@ def _find_go_link(html: str) -> str | None:
 
 
 async def _get_with_retry(
-    client: httpx.AsyncClient, url: str, *, max_retries: int = 3, **kwargs
+    client: httpx.AsyncClient, url: str, *, max_retries: int = 5, **kwargs
 ) -> httpx.Response:
     """Make an httpx GET, retrying on 429 / transient errors with backoff."""
+    import random
+
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
@@ -229,15 +238,15 @@ async def _get_with_retry(
         except Exception as e:
             last_exc = e
             if attempt < max_retries:
-                sleep = 2 ** attempt
-                logger.warning("[indiags] Request failed for %s; retrying in %ss: %s", url, sleep, e)
+                sleep = (5 * (2 ** attempt)) + random.uniform(0, 1)
+                logger.warning("[indiags] Request failed for %s; retrying in %.1fs: %s", url, sleep, e)
                 await asyncio.sleep(sleep)
                 continue
             raise
 
         if resp.status_code == 429 and attempt < max_retries:
-            sleep = 2 ** attempt
-            logger.warning("[indiags] HTTP 429 for %s; retrying in %ss...", url, sleep)
+            sleep = (5 * (2 ** attempt)) + random.uniform(0, 1)
+            logger.warning("[indiags] HTTP 429 for %s; retrying in %.1fs...", url, sleep)
             await asyncio.sleep(sleep)
             continue
 

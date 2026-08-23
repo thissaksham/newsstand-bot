@@ -8,6 +8,7 @@ import asyncio
 import datetime
 import logging
 import re
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
@@ -54,6 +55,11 @@ TITLES_PER_PAGE = 8
 # references to tasks, so without this set a task can be garbage-collected
 # mid-run (which silently killed on-subscribe scrapes before).
 _BG_TASKS: set[asyncio.Task] = set()
+
+# Shared cloud IPs (e.g. Render) get rate-limited by indiags.com, so throttle
+# manual premium scrapes to one per title every 10 minutes.
+_PREMIUM_SCRAPE_COOLDOWN_SECONDS = 600
+_LAST_PREMIUM_SCRAPE: dict[int, float] = {}
 
 
 def _track_task(task: asyncio.Task) -> None:
@@ -220,6 +226,19 @@ async def handle_getlatest_callback(update, context) -> None:
     # /go/ links expire and the stored Telegram file_id may point to yesterday's
     # paper that was mislabelled with today's date.
     if category == "The Hindu/Indian Express":
+        now = time.time()
+        last_scraped = _LAST_PREMIUM_SCRAPE.get(title_id, 0)
+        if now - last_scraped < _PREMIUM_SCRAPE_COOLDOWN_SECONDS:
+            remaining = int(_PREMIUM_SCRAPE_COOLDOWN_SECONDS - (now - last_scraped))
+            await context.bot.send_message(
+                user_id,
+                f"⏳ <b>{html_escape(name)}</b> was checked recently. "
+                f"Please wait {remaining // 60}m {remaining % 60}s to avoid rate limits.",
+                parse_mode="HTML",
+            )
+            return
+
+        _LAST_PREMIUM_SCRAPE[title_id] = now
         await context.bot.send_message(
             user_id,
             f"⏳ Fetching the latest <b>{html_escape(name)}</b>…",
