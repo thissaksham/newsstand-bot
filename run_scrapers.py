@@ -630,7 +630,16 @@ async def _run_scrape_cycle_inner(bot: Bot, target_slug, only_categories, is_man
             newspaper_date, download_link = result
 
             existing_edition = await get_edition("", title["id"], newspaper_date)
-            if existing_edition and existing_edition.get("file_id") and existing_edition.get("status") == "delivered":
+            # For regular titles, a stored link for the exact date means we're done.
+            # Premium titles must always re-download because the short-lived /go/
+            # link expires and an earlier edition may have been mislabelled with
+            # the same date (e.g. 23 Aug edition actually contained 22 Aug paper).
+            if (
+                category != "The Hindu/Indian Express"
+                and existing_edition
+                and existing_edition.get("file_id")
+                and existing_edition.get("status") == "delivered"
+            ):
                 logger.info("[%s] Edition for %s already recorded. Delivering link.", name, newspaper_date)
                 if newspaper_date == today or today.weekday() == 6:
                     await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
