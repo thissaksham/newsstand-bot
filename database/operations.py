@@ -401,8 +401,13 @@ async def get_pending_scrapes(db_path: str, scrape_date: date, max_attempts: int
         if not st:
             pending.append(t)
         elif category == "The Hindu/Indian Express":
-            # Premium titles use short-lived /go/ links and may switch dates
-            # after midnight IST, so they must be re-scraped every cycle.
+            # Premium titles may switch dates after midnight IST, so keep
+            # re-checking until the latest delivered edition is actually for
+            # today. Once today's edition is found, skip further cycles.
+            if st["status"] == "found":
+                latest = await get_latest_edition(db_path, tid)
+                if latest and latest.get("date") == scrape_date.isoformat():
+                    continue
             pending.append(t)
         elif st["status"] in ("pending", "failed") and st["attempts"] < max_attempts:
             pending.append(t)

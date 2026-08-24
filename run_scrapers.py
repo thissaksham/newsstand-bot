@@ -652,6 +652,27 @@ async def _run_scrape_cycle_inner(bot: Bot, target_slug, only_categories, is_man
             # Premium titles: download the actual PDF and send as Telegram documents
             # because the source /go/ links expire within a minute.
             if category == "The Hindu/Indian Express":
+                # If we already have a delivered edition for this exact date, don't
+                # re-download the PDF (which would spam subscribers). Just forward
+                # the stored Telegram file_id to any new/missing subscribers.
+                if (
+                    existing_edition
+                    and existing_edition.get("status") == "delivered"
+                    and existing_edition.get("file_id")
+                    and not is_url(existing_edition["file_id"])
+                ):
+                    logger.info(
+                        "[%s] Edition for %s already delivered. Forwarding stored file_id to missing subscribers.",
+                        name, newspaper_date,
+                    )
+                    if newspaper_date == today or today.weekday() == 6:
+                        await upsert_scrape_status("", title["id"], today, status="found", increment_attempts=False)
+                    await deliver_to_subscribers(
+                        bot, existing_edition["id"], existing_edition["file_id"],
+                        title["id"], name, newspaper_date, category,
+                    )
+                    continue
+
                 if existing_edition:
                     edition_id = existing_edition["id"]
                 else:
